@@ -174,7 +174,7 @@ public:
     last = 0;
   }
 
-  bool process(Sample input, Sample *output, size_t d, int ratio = 11, const Sample mu = 0.001)
+  bool process(Sample input, Sample *output, size_t d, int ratio = 11, const Sample mu = 10.0/(FS/2))
   {
     size_t i = last + 1;
     if (i >= Length)
@@ -341,6 +341,26 @@ public:
   }
 };
 
+class WhiteNoiseReductionPipe {
+public:
+  void process(int id,  ThreadSafeQueue<float> &input,  ThreadSafeQueue<float> &output)
+  {
+    NLMS<float, 480> reducewhite;
+    reducewhite.reset();
+
+    boost::circular_buffer<float> z(11);
+    float sig_in, zi;
+
+    for (;;)
+      {
+	sig_in = input.consume();
+	z.push_back(sig_in);
+	reducewhite.process(z.back(), z.front(), &zi, 0.1);
+	output.produce(zi);
+      }
+  }
+};
+
 bool writerepo(struct report *r)
 {
   bool recorded = false;
@@ -390,16 +410,12 @@ class LineReductionPipe {
 public:
   void process(int id,  ThreadSafeQueue<float> &input, int qpdsock)
   {
-    NLMS<float, 480> reducewhite;
-    NLMS<float, 480> reduceline;
-    reducewhite.reset();
+    NLMS<float, 960> reduceline;
     reduceline.reset();
 
-    boost::circular_buffer<float> z(11);
-    boost::circular_buffer<float> x(1960+1);
+    boost::circular_buffer<float> x(960+1);
 
     float sig_in;
-    float zi;
     float e;
     float tmp;
 
@@ -419,9 +435,7 @@ public:
 	    std::cout << "LineReduction input value check failed " << sig_in << std::endl;
 	  }
 #endif
-	z.push_back(sig_in);
-	reducewhite.process(z.back(), z.front(), &zi, 0.1);
-	x.push_back(zi);
+	x.push_back(sig_in);
 	e = reduceline.process(x.back(), x.front(), &tmp, 0.01);
 	dbuf[didx] = e;
 	if (++didx == DNUM)
@@ -478,9 +492,10 @@ public:
 
 int main(int argc, char **argv)
 {
-  ThreadSafeQueue<float> q0(FS/2), q1(FS/2);
+  ThreadSafeQueue<float> q0(FS/2), q1(FS/2), q2(FS/2);
   ImpulseReductionPipe p0;
-  LineReductionPipe p1;
+  WhiteNoiseReductionPipe p1;
+  LineReductionPipe p2;
   option longopts[] = {
     {"format", required_argument, NULL, 'f'},
     {"qpdhost", required_argument, NULL, 'h'}, 
@@ -597,8 +612,10 @@ int main(int argc, char **argv)
     }
   std::cout << "qpd server connected" << std::endl;
 
+  // Pipeline
   std::thread ith(&ImpulseReductionPipe::process, &p0, 1, std::ref(q0), std::ref(q1));
-  std::thread lth(&LineReductionPipe::process, &p1, 2, std::ref(q1), qpdsock);
+  std::thread wth(&WhiteNoiseReductionPipe::process, &p1, 1, std::ref(q1), std::ref(q2));
+  std::thread lth(&LineReductionPipe::process, &p2, 2, std::ref(q2), qpdsock);
 
   std::array<float, 2> phases{};
 
@@ -689,7 +706,9 @@ int main(int argc, char **argv)
 #endif
 
   close(sigsock);
- 
+
+  // Formal cleanup
   ith.join();
+  wth.join();
   lth.join();
 }
