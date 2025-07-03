@@ -33,8 +33,8 @@ int qpd_tcp_port = 5992;
 struct report {
   float mean_value;
   float max_value;
-  int32_t maxarg_x;
-  int32_t maxarg_y;
+  int32_t argmax_x;
+  int32_t argmax_y;
 };
 
 int watermark = 15;
@@ -164,6 +164,7 @@ private:
   std::array<Sample, Length> x{};
   Sample mx;
   size_t last;
+  int counter;
   //const Sample mu = 0.005;
 
 public:
@@ -172,6 +173,7 @@ public:
     x.fill(0);
     mx = (Sample) 0;
     last = 0;
+    counter = 0;
   }
 
   bool process(Sample input, Sample *output, size_t d, int ratio = 11, const Sample mu = 10.0/(FS/2))
@@ -182,6 +184,10 @@ public:
     last = i;
     x[i] = input;
     mx = (1-mu)*mx + mu*abs(input);
+    if (abs(input) >= ratio*mx/2)
+      counter = Length;
+    else if (counter > 0)
+      --counter;
 
     size_t delta = d/2;
     Sample yh;
@@ -189,6 +195,10 @@ public:
       yh = x[i-delta];
     else
       yh = x[i+Length-delta];
+    *output = yh;
+
+    if (counter == 0)
+      return false;
 
     bool e = false;
     for (size_t j = 0; j < d; ++j)
@@ -204,7 +214,6 @@ public:
 	    break;
 	  }
       }
-    *output = yh;
     return e;
   }
 };
@@ -361,25 +370,21 @@ public:
   }
 };
 
-bool writerepo(struct report *r)
+bool writeRepo(struct report *r)
 {
   bool recorded = false;
+  float maxrank = 0;
   for (int i = 0; i < NBUF; i++)
     {
-      if (r[i].mean_value * watermark < r[i].max_value)
-	{
-	  recorded = true;
-	  break;
-	}
+      float rank = r[i].max_value/r[i].mean_value;
+      if (rank > maxrank)
+	maxrank = rank;
 #if 1
       if (100 < r[i].max_value)
-	{
-	  std::cout << "too high max: " << r[i].max_value << std::endl;
-	  recorded = true;
-	  break;
-	}
+	std::cout << "suspicious high max: " << r[i].max_value << std::endl;
 #endif
-    }
+     }
+  recorded = maxrank > watermark ? true : false;
   if (recorded)
     {
       // Write repo buf to file like as
@@ -391,8 +396,7 @@ bool writerepo(struct report *r)
       memset(fn, 0, sizeof(fn));
       sprintf(fn, "%4d%02d%02d_%02d%02d%02d.repo",
 	      s.tm_year+1900, s.tm_mon+1, s.tm_mday, s.tm_hour, s.tm_min, s.tm_sec);
-      std::cout << "record repo file " << fn << std::endl;
-#if 1
+      std::cout << "record repo file " << fn << " rank " << maxrank << std::endl;
       std::ofstream repoFile;
       std::string fnstr(fn);
       repoFile.open(fnstr, std::ios::out | std::ios::binary);
@@ -400,6 +404,14 @@ bool writerepo(struct report *r)
 	{
 	  repoFile.write(reinterpret_cast<const char*>(r), NBUF*sizeof(struct report));
 	  repoFile.close();
+	}
+#if 0
+      for (size_t i = 0; i < NBUF; i++)
+	{
+	  float rank = r[i].max_value/r[i].mean_value;
+	  std::cout << "rank " << rank << " (mean " << r[i].mean_value << " max " << r[i].max_value  << ")" << std::endl;
+	  std::cout << "toff " << r[i].argmax_x*0.01 + i*0.5 << std::endl;
+	  std::cout << "alpha " << r[i].argmax_y + 2300 << std::endl;
 	}
 #endif
     }
@@ -468,14 +480,14 @@ public:
 #if 0
 		    std::cout << "mean " << repo.mean_value << std::endl;
 		    std::cout << "max " << repo.max_value << std::endl;
-		    std::cout << "maxval " << repo.maxarg_x << ", " << repo.maxarg_y << std::endl;
+		    std::cout << "maxval " << repo.argmax_x << ", " << repo.argmax_y << std::endl;
 #endif
 		    std::unique_lock<std::mutex> lock(repo_mtx);
 		    repo_buf[repo_cur][repo_index] = repo;
 		    if (++repo_index == NBUF)
 		      {
 			// Write repo if needed
-			repo_recorded = writerepo(repo_buf[repo_cur]);
+			repo_recorded = writeRepo(repo_buf[repo_cur]);
 			repo_index = 0;
 			repo_cur = ~repo_cur & 1;
 		      }
@@ -647,7 +659,7 @@ int main(int argc, char **argv)
 	  if (hbsig < -1.0 || hbsig > 1.0)
 	    {
 	      std::cout << "hbsig value check failed " << hbsig << std::endl;
-	      return EXIT_FAILURE;
+	      //return EXIT_FAILURE;
 	    }
 #endif
 	  q0.produce(hbsig);

@@ -26,8 +26,8 @@ const int FS = 48000;
 struct report {
   float mean_value;
   float max_value;
-  int32_t maxarg_x;
-  int32_t maxarg_y;
+  int32_t argmax_x;
+  int32_t argmax_y;
 };
 
 int watermark = 15;
@@ -48,14 +48,34 @@ typedef struct __attribute__((packed)) WAV_HEADER {
   uint16_t blockAlign = 4;          // 2=16-bit mono, 4=16-bit stereo
   uint16_t bitsPerSample = 32;      // Number of bits per sample
   uint16_t cbSize = 0;
-#if 0
-  uint8_t SubchunkEID[4] = {'f', 'a', 'c', 't'};
-  uint8_t SubchunkEData[8] = { 0x04,0x00,0x00,0x00,0x80,0x32,0x02,0x00};
-#endif
   /* "data" sub-chunk */
   uint8_t Subchunk2ID[4] = {'d', 'a', 't', 'a'}; // "data"  string
   uint32_t Subchunk2Size;                        // Sampled data length
 } wav_hdr;
+
+typedef struct __attribute__((packed)) WAV_HEADER_EX {
+  /* RIFF Chunk Descriptor */
+  uint8_t RIFF[4] = {'R', 'I', 'F', 'F'}; // RIFF Header Magic header
+  uint32_t ChunkSize;                    // RIFF Chunk Size
+  uint8_t WAVE[4] = {'W', 'A', 'V', 'E'}; // WAVE Header
+  /* "fmt" sub-chunk */
+  uint8_t fmt[4] = {'f', 'm', 't', ' '}; // FMT header
+  uint32_t Subchunk1Size = 18; // Size of the fmt chunk
+  uint16_t AudioFormat = 3;  // 3=LE float
+  uint16_t NumOfChan = 1;   // 1=Mono 2=Sterio
+  uint32_t SamplesPerSec = FS;  // Sampling Frequency in Hz
+  uint32_t bytesPerSec = FS * 4; // bytes per second
+  uint16_t blockAlign = 4;          // 2=16-bit mono, 4=16-bit stereo
+  uint16_t bitsPerSample = 32;      // Number of bits per sample
+  uint16_t cbSize = 0;
+  /* "fact" sub-chunk */
+  uint8_t SubchunkEID[4] = {'f', 'a', 'c', 't'};
+  uint32_t SubchunkESize = 4;
+  uint8_t SubchunkEData[4] = { 0x80,0x32,0x02,0x00};
+  /* "data" sub-chunk */
+  uint8_t Subchunk2ID[4] = {'d', 'a', 't', 'a'}; // "data"  string
+  uint32_t Subchunk2Size;                        // Sampled data length
+} wav_hdr_ex;
 
 // Imp]ulse noise detector
 
@@ -64,6 +84,7 @@ private:
   std::array<Sample, Length> x{};
   Sample mx;
   size_t last;
+  int counter;
   //const Sample mu = 0.005;
 
 public:
@@ -72,6 +93,7 @@ public:
     x.fill(0);
     mx = (Sample) 0;
     last = 0;
+    counter = 0;
   }
 
   bool process(Sample input, Sample *output, size_t d, int ratio = 11, const Sample mu = 10.0/FS)
@@ -82,6 +104,10 @@ public:
     last = i;
     x[i] = input;
     mx = (1-mu)*mx + mu*abs(input);
+    if (abs(input) >= ratio*mx/2)
+      counter = Length;
+    else if (counter > 0)
+      --counter;
 
     size_t delta = d/2;
     Sample yh;
@@ -89,6 +115,10 @@ public:
       yh = x[i-delta];
     else
       yh = x[i+Length-delta];
+    *output = yh;
+
+    if (counter == 0)
+      return false;
 
     bool e = false;
     for (size_t j = 0; j < d; ++j)
@@ -104,7 +134,6 @@ public:
 	    break;
 	  }
       }
-    *output = yh;
     return e;
   }
 };
@@ -183,7 +212,9 @@ int main(int argc, char **argv)
     {"skip-impulse", no_argument, NULL, 'p'},
     {"skip-white", no_argument, NULL, 'w'},
     {"skip-line", no_argument, NULL, 'l'},
+    {"print-impulse-section", no_argument, NULL, 's'},
     {"line-delay", required_argument, NULL, 'd'},
+    {"detect-ratio", required_argument, NULL, 'r'},
     {0}};
   int c;
   char *ifname;
@@ -192,8 +223,12 @@ int main(int argc, char **argv)
   bool skip_impulse = false;
   bool skip_white = false;
   bool skip_line = false;
-  int line_delay = 1920;
+  bool print_section = false;
+  int line_delay = 960;
+  float detect_ratio = 11;
+  
   wav_hdr wav;
+  wav_hdr_ex wavex;
 
   ifname = (char *)"data.wav";
   ofname = (char *)"clean.wav";
@@ -201,7 +236,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "i:o:pwld:", longopts, &option_index);
+      c = getopt_long(argc, argv, "i:o:pwlsd:r:", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -209,11 +244,8 @@ int main(int argc, char **argv)
 	case 'd':
 	  if (optarg)
 	    {
-	      char nbuf[8];
-	      strncpy(nbuf, optarg, 8);
-	      nbuf[7] = 0;
-	      std::string nstr(nbuf);
-	      int delay = std::stoi(nstr);
+	      char *end;
+	      int delay = std::strtol(optarg, &end, 10);
 	      if (delay >= 480 && delay < 480*6)
 		{
 		  line_delay = delay;
@@ -224,7 +256,25 @@ int main(int argc, char **argv)
 	    }
 	  else
 	    {
-	      std::cout << "-d option requires finename arg" << std::endl;
+	      std::cout << "-d option requires int arg" << std::endl;
+	    }
+	  break;
+	case 'r':
+	  if (optarg)
+	    {
+	      char *end;
+	      float ratio = std::strtof(optarg, &end);
+	      if (ratio >= 6 && ratio < 20)
+		{
+		  detect_ratio = ratio;
+		  std::cout << "setting detect-ratio to " << ratio << std::endl;
+		}
+	      else
+		std::cout << "wrong detect-ratio value " << ratio << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-r option requires float arg" << std::endl;
 	    }
 	  break;
 	case 'i':
@@ -258,6 +308,9 @@ int main(int argc, char **argv)
 	case 'l':
 	  skip_line = true;
 	  break;
+	case 's':
+	  print_section = true;
+	  break;
 	default:
 	  break;
 	}
@@ -281,8 +334,17 @@ int main(int argc, char **argv)
     }
 
   iwavFile.read(reinterpret_cast<char*>(&wav), sizeof(wav));
+  if (memcmp(wav.Subchunk2ID, "fact", 4)  == 0)
+    {
+      iwavFile.seekg(0);
+      iwavFile.read(reinterpret_cast<char*>(&wavex), sizeof(wavex));
+      fsize = wavex.Subchunk2Size;
+    }
+  else
+    {
+      fsize = wav.Subchunk2Size;
+    }
   // Check WAV format
-  fsize = wav.Subchunk2Size;
   cout << "wav chunk size " << fsize << endl;
   ibuf = (float *)malloc(fsize);
   obuf = (float *)malloc(fsize);
@@ -315,21 +377,23 @@ int main(int argc, char **argv)
   auto start = std::chrono::steady_clock::now();
 #endif
 
-  for (size_t i = 0; i < fsize/sizeof(float); i++)
-    {
-      size_t delta = 120;
-      size_t M = 960;
-      float sig_in;
-      float xi, yi, zi;
-      float e;
-      bool imp;
-      float tmp;
+  size_t delta = 120;
+  size_t M = 960;
+  float sig_in;
+  float xi, yi, zi;
+  float e;
+  bool imp;
+  bool imp_prev = false;
+  float tmp;
 
+  // training for 1.0sec
+  for (size_t i = 0; i < FS && i < fsize/sizeof(float) ; i++)
+    {
       sig_in = ibuf[i];
 
       if (i < M)
 	{
-	  impdet.process(sig_in, &xi, 2*delta);
+	  impdet.process(sig_in, &xi, 2*delta, detect_ratio);
 	  x.push_back(xi);
 	  yi = xi;
 	  reduceimp.process(x.front(), x.back(), &tmp, 0.05);
@@ -337,8 +401,7 @@ int main(int argc, char **argv)
 	  z.push_back(yi);
 	  reducewhite.process(z.back(), z.front(), &zi, 0.1);
 	  w.push_back(zi);
-	  e = reduceline.process(w.back(), w.front(), &tmp, 0.01);
-	  obuf[i] = e;
+	  reduceline.process(w.back(), w.front(), &tmp, 0.01);
 	}
       else
 	{
@@ -346,7 +409,7 @@ int main(int argc, char **argv)
 	    yi = sig_in;
 	  else
 	    {
-	      imp = impdet.process(sig_in, &xi, 2*delta);
+	      imp = impdet.process(sig_in, &xi, 2*delta, detect_ratio);
 	      x.push_back(xi);
 	      if (imp == false)
 		{
@@ -366,15 +429,59 @@ int main(int argc, char **argv)
 	      z.push_back(yi);
 	      reducewhite.process(z.back(), z.front(), &zi, 0.1);
 	    }
-	  if (skip_line)
-	    e = zi;
-	  else
+	  if (!skip_line)
 	    {
 	      w.push_back(zi);
-	      e = reduceline.process(w.back(), w.front(), &tmp, 0.01);
+	      reduceline.process(w.back(), w.front(), &tmp, 0.01);
 	    }
-	  obuf[i] = e;
 	}
+    }
+
+  for (size_t i = 0; i < fsize/sizeof(float); i++)
+    {
+      sig_in = ibuf[i];
+
+      if (skip_impulse)
+	yi = sig_in;
+      else
+	{
+	  imp = impdet.process(sig_in, &xi, 2*delta, detect_ratio);
+	  if (print_section)
+	    {
+	      float t = (float)i/FS;
+	      if (imp_prev == false && imp == true)
+		std::cout << "impulse section rising " << t << std::endl;
+	      if (imp_prev == true && imp == false)
+		std::cout << "impulse section falling " << t << std::endl;
+	      imp_prev = imp;
+	    }
+	  x.push_back(xi);
+	  if (imp == false)
+	    {
+	      yi = xi;
+	      reduceimp.process(x.front(), x.back(), &tmp, 0.05);
+	    }
+	  else
+	    {
+	      reduceimp.process(y.back(), 0.0, &yi, 0.05, false);
+	    }
+	  y.push_back(yi);
+	}
+      if (skip_white)
+	zi = yi;
+      else
+	{
+	  z.push_back(yi);
+	  reducewhite.process(z.back(), z.front(), &zi, 0.1);
+	}
+      if (skip_line)
+	e = zi;
+      else
+	{
+	  w.push_back(zi);
+	  e = reduceline.process(w.back(), w.front(), &tmp, 0.01);
+	}
+      obuf[i] = e;
     }
 
 #if 0
@@ -391,10 +498,13 @@ int main(int argc, char **argv)
       std::cout << "can't open " << ofnstr << std::endl;
       return EXIT_FAILURE;
     }
-  owavFile.write(reinterpret_cast<const char*>(&wav), sizeof(wav));
+  wav_hdr owav;
+  owav.ChunkSize = fsize + sizeof(wav_hdr) - 8;
+  owav.Subchunk2Size = fsize;
+  owavFile.write(reinterpret_cast<const char*>(&owav), sizeof(owav));
   if (owavFile.fail())
     {
-      cout << "can't write file header" << endl;
+      std::cout << "can't write file header" << std::endl;
       owavFile.close();
       return EXIT_FAILURE;
     }
