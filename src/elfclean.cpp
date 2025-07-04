@@ -33,6 +33,19 @@ struct report {
 int watermark = 15;
 
 // WAV
+typedef struct __attribute__((packed)) WAV_HEADER_COM {
+  /* RIFF Chunk Descriptor */
+  uint8_t RIFF[4] = {'R', 'I', 'F', 'F'}; // RIFF Header Magic header
+  uint32_t ChunkSize;                    // RIFF Chunk Size
+  uint8_t WAVE[4] = {'W', 'A', 'V', 'E'}; // WAVE Header
+} wav_hdr_com;
+
+typedef struct __attribute__((packed)) SUB_CHUNK_HEADER {
+  /* SubChunk Descriptor */
+  uint8_t SubChunkID[4];  // SubChunk id
+  uint32_t SubChunkSize; // SubChunk Size
+} subchunk_hdr;
+
 typedef struct __attribute__((packed)) WAV_HEADER {
   /* RIFF Chunk Descriptor */
   uint8_t RIFF[4] = {'R', 'I', 'F', 'F'}; // RIFF Header Magic header
@@ -226,7 +239,8 @@ int main(int argc, char **argv)
   bool print_section = false;
   int line_delay = 960;
   float detect_ratio = 11;
-  
+
+  wav_hdr_com wavcom;
   wav_hdr wav;
   wav_hdr_ex wavex;
 
@@ -333,25 +347,72 @@ int main(int argc, char **argv)
       return EXIT_FAILURE;
     }
 
-  iwavFile.read(reinterpret_cast<char*>(&wav), sizeof(wav));
-  if (memcmp(wav.Subchunk2ID, "fact", 4)  == 0)
+  iwavFile.read(reinterpret_cast<char*>(&wavcom), sizeof(wavcom));
+  if (iwavFile.fail())
     {
-      iwavFile.seekg(0);
-      iwavFile.read(reinterpret_cast<char*>(&wavex), sizeof(wavex));
-      fsize = wavex.Subchunk2Size;
+      std::cout << "can't read file" << std::endl;
+      iwavFile.close();
+      return EXIT_FAILURE;
     }
-  else
+  if (memcmp(wavcom.RIFF, "RIFF", 4)  != 0
+      || memcmp(wavcom.WAVE, "WAVE", 4)  != 0)
     {
-      fsize = wav.Subchunk2Size;
+      std::cout << "not WAV file" << std::endl;
+      iwavFile.close();
+      return EXIT_FAILURE;
     }
+
+  while (true)
+    {
+      subchunk_hdr subchunk;
+      uint32_t chunksize = 0;
+      iwavFile.read(reinterpret_cast<char*>(&subchunk), sizeof(subchunk));
+      if (iwavFile.fail())
+	{
+	  std::cout << "can't read file" << std::endl;
+	  iwavFile.close();
+	  return EXIT_FAILURE;
+	}
+      if (memcmp(subchunk.SubChunkID, "fmt ", 4)  == 0)
+	{
+	  chunksize = subchunk.SubChunkSize;
+	}
+      else if (memcmp(subchunk.SubChunkID, "fact", 4)  == 0)
+	{
+	  chunksize = subchunk.SubChunkSize;
+	}
+      else if (memcmp(subchunk.SubChunkID, "data", 4)  == 0)
+	{
+	  fsize = subchunk.SubChunkSize;
+	  break;
+	}
+      else
+	{
+	  chunksize = subchunk.SubChunkSize;
+	  std::cout << "unknown subchunk id "
+		    << subchunk.SubChunkID[0]
+		    << subchunk.SubChunkID[1]
+		    << subchunk.SubChunkID[2]
+		    << subchunk.SubChunkID[3]
+		    << std::endl;
+	}
+      iwavFile.seekg(chunksize, std::ios_base:: cur);
+      if (iwavFile.fail())
+	{
+	  std::cout << "read error" << std::endl;
+	  iwavFile.close();
+	  return EXIT_FAILURE;
+	}
+    }
+
   // Check WAV format
-  cout << "wav chunk size " << fsize << endl;
+  std::cout << "wav chunk size " << fsize << std::endl;
   ibuf = (float *)malloc(fsize);
   obuf = (float *)malloc(fsize);
   iwavFile.read(reinterpret_cast<char*>(ibuf), fsize);
   if (iwavFile.fail())
     {
-      cout << "can't read file" << endl;
+      std::cout << "can't read file" << std::endl;
       iwavFile.close();
       return EXIT_FAILURE;
     }
@@ -511,7 +572,7 @@ int main(int argc, char **argv)
   owavFile.write(reinterpret_cast<const char*>(obuf), fsize);
   if (owavFile.fail())
     {
-      cout << "can't write file" << endl;
+      std::cout << "can't write file" << std::endl;
       owavFile.close();
       return EXIT_FAILURE;
     }
