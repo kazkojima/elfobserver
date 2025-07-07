@@ -244,8 +244,8 @@ int main(int argc, char **argv)
   wav_hdr wav;
   wav_hdr_ex wavex;
 
-  ifname = (char *)"data.wav";
-  ofname = (char *)"clean.wav";
+  ifname = NULL;
+  ofname = NULL;
 
   while (1)
     {
@@ -328,6 +328,21 @@ int main(int argc, char **argv)
 	default:
 	  break;
 	}
+    }
+
+  if (ifname == NULL)
+    {
+      if (optind < argc )
+	ifname = argv[optind++];
+      else
+	ifname = (char *)"data.wav";
+    }
+  if (ofname == NULL)
+    {
+      if (optind < argc )
+	ofname = argv[optind];
+      else
+	ofname = (char *)"clean.wav";
     }
 
   std::cout << "input filename " << ifname << std::endl;
