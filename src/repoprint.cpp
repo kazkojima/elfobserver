@@ -25,6 +25,7 @@ int main(int argc, char **argv)
   option longopts[] = {
     {"input", required_argument, NULL, 'i'},
     {"print-all", no_argument, NULL, 'a'},
+    {"help", no_argument, NULL, 'h'},
     {0}};
   int c;
   char *ifname;
@@ -34,7 +35,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "i:a", longopts, &option_index);
+      c = getopt_long(argc, argv, "i:ah", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -53,6 +54,16 @@ int main(int argc, char **argv)
 	case 'a':
 	  print_all = true;
 	  break;
+	case 'h':
+	  std::cout << "usage: repoprint [option]... [file]" << std::endl;
+	  std::cout << std::endl;
+	  std::cout << "Print report file with some readable form" << std::endl;
+	  std::cout << std::endl;
+	  std::cout << "-i, --input=filename\tgive input file as an option" << std::endl;
+	  std::cout << "-a, --print-all\t\tprint all reports" << std::endl;
+	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
+
+	  return 0;
 	default:
 	  break;
 	}

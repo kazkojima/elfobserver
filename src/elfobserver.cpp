@@ -370,6 +370,12 @@ public:
   }
 };
 
+bool print_statistics = false;
+size_t statistics_count;
+const int LOWWM = 12;
+const int HIGHWM = 20;
+size_t ranksize[HIGHWM+1];
+
 bool writeRepo(struct report *r)
 {
   bool recorded = false;
@@ -385,6 +391,20 @@ bool writeRepo(struct report *r)
 #endif
      }
   recorded = maxrank > watermark ? true : false;
+  if (print_statistics)
+    {
+      int idx = std::clamp((int)maxrank, LOWWM, HIGHWM);
+      ranksize[idx]++;
+      // writeRepo is called every 10sec. Print statistics every 1hour.
+      if (++statistics_count % 360 == 0)
+	{
+	  std::cout << "[- " << LOWWM << "]:" << ranksize[LOWWM];
+	  for (int i = LOWWM+1; i < HIGHWM; i++)
+	    std::cout << " [" << i << "]:" << ranksize[i];
+	  std::cout << " [" << HIGHWM << " -]:" << ranksize[HIGHWM];
+	  std::cout << std::endl;
+	}
+    }
   if (recorded)
     {
       // Write repo buf to file like as
@@ -510,8 +530,11 @@ int main(int argc, char **argv)
   LineReductionPipe p2;
   option longopts[] = {
     {"format", required_argument, NULL, 'f'},
-    {"qpdhost", required_argument, NULL, 'h'}, 
-    {"watermark", required_argument, NULL, 'w'}, {0}};
+    {"qpdhost", required_argument, NULL, 'q'}, 
+    {"watermark", required_argument, NULL, 'w'},
+    {"statistics", no_argument, NULL, 's'},
+    {"help", no_argument, NULL, 'h'},
+   {0}};
   int c;
   char hostname[16];
   bool format_wav = true;
@@ -520,7 +543,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:h:w:", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:sh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -536,7 +559,7 @@ int main(int argc, char **argv)
 		std::cout << "only raw or wav format supported. Assume wav" << std::endl;
 	    }
 	  break;
-	case 'h':
+	case 'q':
 	  if (optarg)
 	    {
 	      char pbuf[24];
@@ -565,12 +588,25 @@ int main(int argc, char **argv)
 	      if (wm > 0 && wm < 30)
 		{
 		  watermark = wm;
-		  std::cout << "setting water mark to " << wm << std::endl;
+		  std::cout << "setting watermark to " << wm << std::endl;
 		}
 	      else
-		std::cout << "water mark " << wm << "out of range (0, 30)" << std::endl;
+		std::cout << "watermark " << wm << "out of range (0, 30)" << std::endl;
 	    }
 	  break;
+	case 's':
+	  print_statistics = true;
+	  break;
+	case 'h':
+	  std::cout << "usage: elfobserver [option]..." << std::endl;
+	  std::cout << std::endl;
+	  std::cout << "observe ELF and record/report interesting activities" << std::endl;
+	  std::cout << std::endl;
+	  std::cout << "-f, --format=[wav,raw]\tset input file format" << std::endl;
+	  std::cout << "-q, --qpdhost=host:port\tset qpd host address&port" << std::endl;
+	  std::cout << "-w, --watermark=N\tset watermark" << std::endl;
+	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
+	  return 0;
 	default:
 	  break;
 	}

@@ -228,6 +228,7 @@ int main(int argc, char **argv)
     {"print-impulse-section", no_argument, NULL, 's'},
     {"line-delay", required_argument, NULL, 'd'},
     {"detect-ratio", required_argument, NULL, 'r'},
+    {"help", no_argument, NULL, 'h'},
     {0}};
   int c;
   char *ifname;
@@ -250,7 +251,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "i:o:pwlsd:r:", longopts, &option_index);
+      c = getopt_long(argc, argv, "i:o:pwlsd:r:h", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -325,6 +326,22 @@ int main(int argc, char **argv)
 	case 's':
 	  print_section = true;
 	  break;
+	case 'h':
+	  std::cout << "usage: elfclean [option]... [input file] [output file]" << std::endl;
+	  std::cout << std::endl;
+	  std::cout << "A simple noise reduction tool for ELF WAV" << std::endl;
+	  std::cout << std::endl;
+	  std::cout << "-i, --input=filename\tgive input file as an option" << std::endl;
+	  std::cout << "-o, --output=filename\tgive output file as an option" << std::endl;
+	  std::cout << "-p, --skip-impulse\tskip impulse noise canceller" << std::endl;
+	  std::cout << "-w, --skip-white\tskip white noise canceller" << std::endl;
+	  std::cout << "-l, --skip-line\t\tskip line reducer" << std::endl;
+	  std::cout << "-s, --print-impulse-section\tprint impulse section" << std::endl;
+	  std::cout << "-d, --line-delay=N\tset the delay for line reducer" << std::endl;
+	  std::cout << "-r, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
+	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
+
+	  return 0;
 	default:
 	  break;
 	}
