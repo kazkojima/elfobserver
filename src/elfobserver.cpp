@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <thread>
 #include <boost/circular_buffer.hpp>
+#include <random>
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -38,6 +39,7 @@ struct report {
 };
 
 int watermark = 15;
+float output_rate = 1.0;
 
 // half band raw signal and report double buffers
 const int NBUF = 20;
@@ -376,6 +378,9 @@ const int LOWWM = 12;
 const int HIGHWM = 20;
 size_t ranksize[HIGHWM+1];
 
+std::random_device seed_gen;
+std::mt19937 random_engine(seed_gen());
+
 bool writeRepo(struct report *r)
 {
   bool recorded = false;
@@ -390,7 +395,16 @@ bool writeRepo(struct report *r)
 	std::cout << "suspicious high max: " << r[i].max_value << std::endl;
 #endif
      }
-  recorded = maxrank > watermark ? true : false;
+  if (output_rate != 1.0)
+    {
+      constexpr std::size_t bits = std::numeric_limits<float>::digits;
+      float result = std::generate_canonical<float, bits>(random_engine);
+      if (output_rate > result && maxrank > watermark)
+	recorded = true;
+    }
+  else
+    recorded = maxrank > watermark ? true : false;
+      
   if (print_statistics)
     {
       int idx = std::clamp((int)maxrank, LOWWM, HIGHWM);
@@ -532,6 +546,7 @@ int main(int argc, char **argv)
     {"format", required_argument, NULL, 'f'},
     {"qpdhost", required_argument, NULL, 'q'}, 
     {"watermark", required_argument, NULL, 'w'},
+    {"rate", required_argument, NULL, 'r'},
     {"statistics", no_argument, NULL, 's'},
     {"help", no_argument, NULL, 'h'},
    {0}};
@@ -543,7 +558,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:sh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:sh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -585,13 +600,31 @@ int main(int argc, char **argv)
 	    {
 	      std::string wmstr(optarg);
 	      int wm = std::stoi(wmstr);
-	      if (wm > 0 && wm < 30)
+	      if (wm >= 0 && wm < 30)
 		{
 		  watermark = wm;
 		  std::cout << "setting watermark to " << wm << std::endl;
 		}
 	      else
-		std::cout << "watermark " << wm << "out of range (0, 30)" << std::endl;
+		std::cout << "watermark " << wm << "out of range [0, 30)" << std::endl;
+	    }
+	  break;
+	case 'r':
+	  if (optarg)
+	    {
+	      char *end;
+	      float rate = std::strtof(optarg, &end);
+	      if (rate >= 0 && rate <= 1)
+		{
+		  output_rate = rate;
+		  std::cout << "setting output rate to " << rate << std::endl;
+		}
+	      else
+		std::cout << "wrong output rate value " << rate << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-r option requires float arg" << std::endl;
 	    }
 	  break;
 	case 's':
@@ -605,6 +638,8 @@ int main(int argc, char **argv)
 	  std::cout << "-f, --format=[wav,raw]\tset input file format" << std::endl;
 	  std::cout << "-q, --qpdhost=host:port\tset qpd host address&port" << std::endl;
 	  std::cout << "-w, --watermark=N\tset watermark" << std::endl;
+	  std::cout << "-r, --rate=F\tset output rate" << std::endl;
+	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
 	  return 0;
 	default:
