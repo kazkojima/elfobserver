@@ -372,6 +372,7 @@ public:
   }
 };
 
+bool print_info = true;
 bool print_statistics = false;
 size_t statistics_count;
 const int LOWWM = 12;
@@ -430,7 +431,8 @@ bool writeRepo(struct report *r)
       memset(fn, 0, sizeof(fn));
       sprintf(fn, "%4d%02d%02d_%02d%02d%02d.repo",
 	      s.tm_year+1900, s.tm_mon+1, s.tm_mday, s.tm_hour, s.tm_min, s.tm_sec);
-      std::cout << "record repo file " << fn << " rank " << maxrank << std::endl;
+      if (print_info)
+	std::cout << "record repo file " << fn << " rank " << maxrank << std::endl;
       std::ofstream repoFile;
       std::string fnstr(fn);
       repoFile.open(fnstr, std::ios::out | std::ios::binary);
@@ -547,6 +549,7 @@ int main(int argc, char **argv)
     {"qpdhost", required_argument, NULL, 'q'}, 
     {"watermark", required_argument, NULL, 'w'},
     {"rate", required_argument, NULL, 'r'},
+    {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
     {"help", no_argument, NULL, 'h'},
    {0}};
@@ -558,7 +561,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:sh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -627,6 +630,9 @@ int main(int argc, char **argv)
 	      std::cout << "-r option requires float arg" << std::endl;
 	    }
 	  break;
+	case 'n':
+	  print_info = false;
+	  break;
 	case 's':
 	  print_statistics = true;
 	  break;
@@ -639,6 +645,7 @@ int main(int argc, char **argv)
 	  std::cout << "-q, --qpdhost=host:port\tset qpd host address&port" << std::endl;
 	  std::cout << "-w, --watermark=N\tset watermark" << std::endl;
 	  std::cout << "-r, --rate=F\tset output rate" << std::endl;
+	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
 	  return 0;
@@ -759,7 +766,8 @@ int main(int argc, char **argv)
 		  const char *ext = format_wav ? "wav" : "raw";
 		  sprintf(fn, "%4d%02d%02d_%02d%02d%02d.%s",
 			  s.tm_year+1900, s.tm_mon+1, s.tm_mday, s.tm_hour, s.tm_min, s.tm_sec, ext);
-		  std::cout << "record signal data file " << fn << std::endl;
+		  if (print_info)
+		    std::cout << "record signal data file " << fn << std::endl;
 #if 1
 		  std::string fnstr(fn);
 		  std::ofstream rawFile;
