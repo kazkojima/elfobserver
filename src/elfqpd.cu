@@ -15,6 +15,8 @@
 #include <chrono>
 #include <unistd.h>
 
+#include <H5Cpp.h>
+
 using namespace std;
 
 const int FS = 48000;
@@ -77,25 +79,36 @@ typedef struct __attribute__((packed)) WAV_HEADER_EX {
   uint32_t Subchunk2Size;                        // Sampled data length
 } wav_hdr_ex;
 
+typedef struct __attribute__((packed)) WAV_FMT_SUBCHUNK {
+  uint16_t AudioFormat = 3;  // 3=LE float
+  uint16_t NumOfChan = 1;   // 1=Mono 2=Sterio
+  uint32_t SamplesPerSec = FS;  // Sampling Frequency in Hz
+  uint32_t bytesPerSec = FS * 4; // bytes per second
+  uint16_t blockAlign = 4;          // 2=16-bit mono, 4=16-bit stereo
+  uint16_t bitsPerSample = 32;      // Number of bits per sample
+  uint16_t cbSize = 0;
+} wav_fmt;
+
 // quadratic phase detector
 
 const int SHIFT = FS/100;
 const int N = 50;
 const int M = 200;
+const int L = 1;
 const int TS = 2;
 const float MU = 50.0/FS;
 
 const double alpha0 = 2300.0;
 const double alpha_step = 1.0;
 const double t0 = 0.7;
-const double t_step = 0.5/(FS/2-1);
+const double t_step = (L*0.5)/(L*FS/2-1);
 const double PI = 3.141592653589793;
 
-float sigbuf[FS];
-float vc[FS/2][M];
-float vs[FS/2][M];
-float array_I[M][N+1];
-float array_Q[M][N+1];
+float sigbuf[L*FS];
+float vc[L*FS/2][M];
+float vs[L*FS/2][M];
+float array_I[M][L*N+1];
+float array_Q[M][L*N+1];
 
 float meanval[M];
 float peakval[M];
@@ -103,7 +116,7 @@ int peakarg[M];
 
 #ifdef USE_CUDA
 __global__ void
-conv_partial(float result[M][N+1], float *sig, float coeff[FS/2][M],
+conv_partial(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M],
 		     int width, int tm, int ofs, float mu)
 {
   int tidx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -114,8 +127,8 @@ conv_partial(float result[M][N+1], float *sig, float coeff[FS/2][M],
   int start, end;
   if (tidx >= width)
     return;
-  start = FS/2 - tidy*((FS/2)/TS) - 1;
-  end = start - ((FS/2)/TS) + 1;
+  start = L*FS/2 - tidy*((L*FS/2)/TS) - 1;
+  end = start - ((L*FS/2)/TS) + 1;
   //float c0 = 1.0 + (float)(alpha_step/alpha0)*tidx;
   for (int j = start; j >= end; j--)
     {
@@ -133,13 +146,13 @@ conv_partial(float result[M][N+1], float *sig, float coeff[FS/2][M],
   result[tidx][tm] = total;
 }
 #else
-void conv_partial_cpu(float result[M][N+1], float *sig, float coeff[FS/2][M],
+void conv_partial_cpu(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M],
 		     int aidx, int tidx, int ofs, float mu)
 {
   float total = 0.0;
   float prev = 0.0;
 
-  for (int j = FS/2-1; j >= 0; j--)
+  for (int j = L*FS/2-1; j >= 0; j--)
     {
       prev = mu*sig[ofs+j]*coeff[j][aidx] + (1-mu)*prev;
       total = total + prev;
@@ -153,10 +166,10 @@ void conv_partial_cpu(float result[M][N+1], float *sig, float coeff[FS/2][M],
 }
 #endif
 
-void qpd(float *sig, float result_I[M][N+1], float result_Q[M][N+1],
-	     float c_I[FS/2][M], float c_Q[FS/2][M], int sft, float mu)
+void qpd(float *sig, float result_I[M][L*N+1], float result_Q[M][L*N+1],
+	     float c_I[L*FS/2][M], float c_Q[L*FS/2][M], int sft, float mu)
 {
-  for (int j = 0; j < N+1; j++)
+  for (int j = 0; j < L*N+1; j++)
     {
       int ofs = j * sft;
 #ifdef USE_CUDA
@@ -174,7 +187,7 @@ void qpd(float *sig, float result_I[M][N+1], float result_Q[M][N+1],
     }
 }
 
-void peak(float result_I[M][N+1], float result_Q[M][N+1],
+void peak(float result_I[M][L*N+1], float result_Q[M][L*N+1],
 	  float mean[M], float val[M], int arg[M])
 {
   for (int i = 0; i < M; i++)
@@ -182,7 +195,7 @@ void peak(float result_I[M][N+1], float result_Q[M][N+1],
       float peakval = 0.0;
       float meanval = 0.0;
       int peakarg = -1;
-      for (int j = 0; j < N; j++)
+      for (int j = 0; j < L*N; j++)
 	{
 	  float a = result_I[i][j]*result_I[i][j] + result_Q[i][j]*result_Q[i][j];
 	  if (a > peakval)
@@ -192,7 +205,7 @@ void peak(float result_I[M][N+1], float result_Q[M][N+1],
 	    }
 	  meanval += a;
 	}
-      mean[i] = meanval/N;
+      mean[i] = meanval/(L*N);
       val[i] = peakval;
       arg[i] = peakarg;
     }
@@ -201,17 +214,25 @@ void peak(float result_I[M][N+1], float result_Q[M][N+1],
 int main(int argc, char **argv)
 {
   char *ifname;
+  char *ofname;
   int optind = 1;
   wav_hdr_com wavcom;
   wav_hdr wav;
   wav_hdr_ex wavex;
+  wav_fmt wavfmt;
 
   if (optind < argc)
     ifname = argv[optind++];
   else
     ifname = (char *)"data.wav";
 
+  if (optind < argc)
+    ofname = argv[optind];
+  else
+    ofname = (char *)"qpdout.h5";
+
   std::cout << "input filename " << ifname << std::endl;
+  std::cout << "output filename " << ofname << std::endl;
   //return 0;
 
   std::string ifnstr(ifname);
@@ -254,10 +275,29 @@ int main(int argc, char **argv)
       if (memcmp(subchunk.SubChunkID, "fmt ", 4)  == 0)
 	{
 	  chunksize = subchunk.SubChunkSize;
+	  if (chunksize != sizeof(wav_fmt))
+	    {
+	      std::cout << "unknown fmt chunk" << std::endl;
+	      iwavFile.close();
+	      return EXIT_FAILURE;
+	    }
+	  iwavFile.read(reinterpret_cast<char*>(&wavfmt), chunksize);
+	  if (wavfmt.AudioFormat != 3  // 3=LE float
+	      || wavfmt.NumOfChan != 1   // 1=Mono 2=Sterio
+	      || wavfmt.SamplesPerSec != FS  // Sampling Frequency in Hz
+	      || wavfmt.bytesPerSec != FS * 4 // bytes per second
+	      || wavfmt.blockAlign != 4          // 2=16-bit mono, 4=16-bit stereo
+	      || wavfmt.bitsPerSample != 32)      // Number of bits per sample
+	    {
+	      std::cout << "wav fmt should be 48k monoral 32-bit float" << std::endl;
+	      iwavFile.close();
+	      return EXIT_FAILURE;
+	    }
 	}
       else if (memcmp(subchunk.SubChunkID, "fact", 4)  == 0)
 	{
 	  chunksize = subchunk.SubChunkSize;
+	  iwavFile.seekg(chunksize, std::ios_base::cur);
 	}
       else if (memcmp(subchunk.SubChunkID, "data", 4)  == 0)
 	{
@@ -273,8 +313,8 @@ int main(int argc, char **argv)
 		    << subchunk.SubChunkID[2]
 		    << subchunk.SubChunkID[3]
 		    << std::endl;
+	  iwavFile.seekg(chunksize, std::ios_base::cur);
 	}
-      iwavFile.seekg(chunksize, std::ios_base:: cur);
       if (iwavFile.fail())
 	{
 	  std::cout << "read error" << std::endl;
@@ -291,7 +331,7 @@ int main(int argc, char **argv)
   for (int i = 0; i < M; i++)
     {
       double t = t0;
-      for (int j = 0; j < FS/2; j++)
+      for (int j = 0; j < L*FS/2; j++)
 	{
 #if 0
 	  vc[i][j] = (float) (2*PI*(alpha/t));
@@ -305,12 +345,12 @@ int main(int argc, char **argv)
       alpha += alpha_step;
     }
   //cout << vc[0][0] << endl;
-  //cout << vc[FS/2-1][0] << endl;
+  //cout << vc[L*FS/2-1][0] << endl;
   
 #ifdef USE_CUDA
   float *d_sig;
   float (*d_vc)[M], (*d_vs)[M];
-  float (*d_I)[N+1], (*d_Q)[N+1];
+  float (*d_I)[L*N+1], (*d_Q)[L*N+1];
   cudaMalloc((void**) &d_sig, sizeof(sigbuf));
   cudaMalloc((void**) &d_vc, sizeof(vc));
   cudaMalloc((void**) &d_vs, sizeof(vs));
@@ -321,8 +361,27 @@ int main(int argc, char **argv)
   cudaMemcpy(d_vs, (void*)vs, sizeof(vs), cudaMemcpyHostToDevice);
 #endif
 
-  iwavFile.read(reinterpret_cast<char*>(sigbuf), FS*sizeof(float));
+  iwavFile.read(reinterpret_cast<char*>(sigbuf), L*FS*sizeof(float));
+#if 0
+  // Clean up
+  for (int i = 0; i < L*FS; i++)
+   if (!isfinite(sigbuf[i]))
+      {
+	sigbuf[i] = 0;
+	//std::cout << "not finite signal value" << std::endl;
+      }
+#endif
 
+  H5::Exception::dontPrint(); // make this progam silent against exceptions.
+  H5::H5File file(ofname, H5F_ACC_TRUNC);
+  hsize_t dims[] = { L*N, M }, dimsmax[] = { H5S_UNLIMITED, M };
+  H5::DataSpace dataspace;
+  dataspace.setExtentSimple(sizeof(dims) / sizeof(hsize_t), dims, dimsmax);
+  H5::DSetCreatPropList prop;
+  hsize_t dimschunk[] = { L*N, M };
+  prop.setChunk(sizeof(dims) / sizeof(hsize_t), dimschunk);
+  H5::DataSet dataset = file.createDataSet("/qpddataset", H5::PredType::NATIVE_FLOAT, dataspace, prop);
+  
   int err = 0;
   int index = 0;
   while (1)
@@ -341,12 +400,31 @@ int main(int argc, char **argv)
       const double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
       //cout << "time " << elapsed << " ms" << endl;
 
+      H5::DataSpace dataspace = dataset.getSpace();
+      int ndims = dataspace.getSimpleExtentNdims();
+      hsize_t dims[ndims], dimsmax[ndims];
+      dataspace.getSimpleExtentDims(dims, dimsmax);
+
+      hsize_t dimsinc[] = { L*N, dims[1] };
+      hsize_t dimsext[] = { dims[0] + dimsinc[0], dims[1] };
+      dataset.extend( dimsext );
+      hsize_t dimsoffset[] = { dims[0] - L*N, 0 };
+      dataspace.selectHyperslab( H5S_SELECT_SET, dimsinc, dimsoffset );
+      float data[L*N*M];
+      for (int j = 0; j < L*N; j++)
+	for (int i = 0; i < M; i++)
+	  {
+	    data[j*M+i] = array_I[i][j] * array_I[i][j] + array_Q[i][j] * array_Q[i][j];
+	  }
+
+      H5::DataSpace memspace(ndims, dimsinc);
+      dataset.write( data, H5::PredType::NATIVE_FLOAT, memspace, dataspace);
 #if 0
       if (elapsed < 500)
 	usleep((500-elapsed)*1000);
 #endif
 #if 0
-      for (int j = 0; j < N; j++)
+      for (int j = 0; j < L*N; j++)
 	{
 	  cout << array_I[0][j] << endl;
 	}
@@ -378,8 +456,8 @@ int main(int argc, char **argv)
       //continue;
       //cout << "qpd" << endl;
       // ...
-      memmove((char *)sigbuf, (char *)&sigbuf[FS/2], FS/2*sizeof(float));
-      iwavFile.read(reinterpret_cast<char*>(&sigbuf[FS/2]), FS/2*sizeof(float));
+      memmove((char *)sigbuf, (char *)&sigbuf[L*FS/2], L*FS/2*sizeof(float));
+      iwavFile.read(reinterpret_cast<char*>(&sigbuf[L*FS/2]), L*FS/2*sizeof(float));
       if (iwavFile.eof())
 	break;
       if (iwavFile.fail())
@@ -387,7 +465,19 @@ int main(int argc, char **argv)
 	  err = 1;
 	  break;
 	}
+#if 0
+      // Clean up
+      for (int i = L*FS/2; i < L*FS; i++)
+	if (!isfinite(sigbuf[i]))
+	  {
+	    sigbuf[i] = 0;
+	    //std::cout << "not finite signal value" << std::endl;
+	  }
+#endif
     }
+
+  dataset.close();
+  file.close();
 
   iwavFile.close();
 #ifdef USE_CUDA
@@ -405,5 +495,3 @@ int main(int argc, char **argv)
     }
   cout << "done" << endl;
 }
-	
-
