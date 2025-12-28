@@ -275,12 +275,14 @@ int main(int argc, char **argv)
       if (memcmp(subchunk.SubChunkID, "fmt ", 4)  == 0)
 	{
 	  chunksize = subchunk.SubChunkSize;
-	  if (chunksize != sizeof(wav_fmt))
+#if 1
+	  if (chunksize != sizeof(wav_fmt) && chunksize != sizeof(wav_fmt) - 2)
 	    {
-	      std::cout << "unknown fmt chunk" << std::endl;
+	      std::cout << "unknown fmt chunk size " << chunksize << std::endl;
 	      iwavFile.close();
 	      return EXIT_FAILURE;
 	    }
+#endif
 	  iwavFile.read(reinterpret_cast<char*>(&wavfmt), chunksize);
 	  if (wavfmt.AudioFormat != 3  // 3=LE float
 	      || wavfmt.NumOfChan != 1   // 1=Mono 2=Sterio
