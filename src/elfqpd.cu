@@ -94,21 +94,20 @@ typedef struct __attribute__((packed)) WAV_FMT_SUBCHUNK {
 const int SHIFT = FS/100;
 const int N = 50;
 const int M = 200;
-const int L = 1;
 const int TS = 2;
 const float MU = 50.0/FS;
 
 const double alpha0 = 2300.0;
 const double alpha_step = 1.0;
 const double t0 = 0.7;
-const double t_step = (L*0.5)/(L*FS/2-1);
+const double t_step = (0.5)/(FS/2-1);
 const double PI = 3.141592653589793;
 
-float sigbuf[L*FS];
-float vc[L*FS/2][M];
-float vs[L*FS/2][M];
-float array_I[M][L*N+1];
-float array_Q[M][L*N+1];
+float sigbuf[FS];
+float vc[FS/2][M];
+float vs[FS/2][M];
+float array_I[M][N+1];
+float array_Q[M][N+1];
 
 float meanval[M];
 float peakval[M];
@@ -116,7 +115,7 @@ int peakarg[M];
 
 #ifdef USE_CUDA
 __global__ void
-conv_partial(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M],
+conv_partial(float result[M][N+1], float *sig, float coeff[FS/2][M],
 		     int width, int tm, int ofs, float mu)
 {
   int tidx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -127,8 +126,8 @@ conv_partial(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M],
   int start, end;
   if (tidx >= width)
     return;
-  start = L*FS/2 - tidy*((L*FS/2)/TS) - 1;
-  end = start - ((L*FS/2)/TS) + 1;
+  start = FS/2 - tidy*((FS/2)/TS) - 1;
+  end = start - ((FS/2)/TS) + 1;
   //float c0 = 1.0 + (float)(alpha_step/alpha0)*tidx;
   for (int j = start; j >= end; j--)
     {
@@ -146,13 +145,13 @@ conv_partial(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M],
   result[tidx][tm] = total;
 }
 #else
-void conv_partial_cpu(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M],
+void conv_partial_cpu(float result[M][N+1], float *sig, float coeff[FS/2][M],
 		     int aidx, int tidx, int ofs, float mu)
 {
   float total = 0.0;
   float prev = 0.0;
 
-  for (int j = L*FS/2-1; j >= 0; j--)
+  for (int j = FS/2-1; j >= 0; j--)
     {
       prev = mu*sig[ofs+j]*coeff[j][aidx] + (1-mu)*prev;
       total = total + prev;
@@ -166,10 +165,10 @@ void conv_partial_cpu(float result[M][L*N+1], float *sig, float coeff[L*FS/2][M]
 }
 #endif
 
-void qpd(float *sig, float result_I[M][L*N+1], float result_Q[M][L*N+1],
-	     float c_I[L*FS/2][M], float c_Q[L*FS/2][M], int sft, float mu)
+void qpd(float *sig, float result_I[M][N+1], float result_Q[M][N+1],
+	     float c_I[FS/2][M], float c_Q[FS/2][M], int sft, float mu)
 {
-  for (int j = 0; j < L*N+1; j++)
+  for (int j = 0; j < N+1; j++)
     {
       int ofs = j * sft;
 #ifdef USE_CUDA
@@ -187,7 +186,7 @@ void qpd(float *sig, float result_I[M][L*N+1], float result_Q[M][L*N+1],
     }
 }
 
-void peak(float result_I[M][L*N+1], float result_Q[M][L*N+1],
+void peak(float result_I[M][N+1], float result_Q[M][N+1],
 	  float mean[M], float val[M], int arg[M])
 {
   for (int i = 0; i < M; i++)
@@ -195,7 +194,7 @@ void peak(float result_I[M][L*N+1], float result_Q[M][L*N+1],
       float peakval = 0.0;
       float meanval = 0.0;
       int peakarg = -1;
-      for (int j = 0; j < L*N; j++)
+      for (int j = 0; j < N; j++)
 	{
 	  float a = result_I[i][j]*result_I[i][j] + result_Q[i][j]*result_Q[i][j];
 	  if (a > peakval)
@@ -205,7 +204,7 @@ void peak(float result_I[M][L*N+1], float result_Q[M][L*N+1],
 	    }
 	  meanval += a;
 	}
-      mean[i] = meanval/(L*N);
+      mean[i] = meanval/(N);
       val[i] = peakval;
       arg[i] = peakarg;
     }
@@ -333,7 +332,7 @@ int main(int argc, char **argv)
   for (int i = 0; i < M; i++)
     {
       double t = t0;
-      for (int j = 0; j < L*FS/2; j++)
+      for (int j = 0; j < FS/2; j++)
 	{
 #if 0
 	  vc[i][j] = (float) (2*PI*(alpha/t));
@@ -347,12 +346,12 @@ int main(int argc, char **argv)
       alpha += alpha_step;
     }
   //cout << vc[0][0] << endl;
-  //cout << vc[L*FS/2-1][0] << endl;
+  //cout << vc[FS/2-1][0] << endl;
   
 #ifdef USE_CUDA
   float *d_sig;
   float (*d_vc)[M], (*d_vs)[M];
-  float (*d_I)[L*N+1], (*d_Q)[L*N+1];
+  float (*d_I)[N+1], (*d_Q)[N+1];
   cudaMalloc((void**) &d_sig, sizeof(sigbuf));
   cudaMalloc((void**) &d_vc, sizeof(vc));
   cudaMalloc((void**) &d_vs, sizeof(vs));
@@ -363,10 +362,10 @@ int main(int argc, char **argv)
   cudaMemcpy(d_vs, (void*)vs, sizeof(vs), cudaMemcpyHostToDevice);
 #endif
 
-  iwavFile.read(reinterpret_cast<char*>(sigbuf), L*FS*sizeof(float));
+  iwavFile.read(reinterpret_cast<char*>(sigbuf), FS*sizeof(float));
 #if 0
   // Clean up
-  for (int i = 0; i < L*FS; i++)
+  for (int i = 0; i < FS; i++)
    if (!isfinite(sigbuf[i]))
       {
 	sigbuf[i] = 0;
@@ -376,11 +375,11 @@ int main(int argc, char **argv)
 
   H5::Exception::dontPrint(); // make this progam silent against exceptions.
   H5::H5File file(ofname, H5F_ACC_TRUNC);
-  hsize_t dims[] = { L*N, M }, dimsmax[] = { H5S_UNLIMITED, M };
+  hsize_t dims[] = { N, M }, dimsmax[] = { H5S_UNLIMITED, M };
   H5::DataSpace dataspace;
   dataspace.setExtentSimple(sizeof(dims) / sizeof(hsize_t), dims, dimsmax);
   H5::DSetCreatPropList prop;
-  hsize_t dimschunk[] = { L*N, M };
+  hsize_t dimschunk[] = { N, M };
   prop.setChunk(sizeof(dims) / sizeof(hsize_t), dimschunk);
   H5::DataSet dataset = file.createDataSet("/qpddataset", H5::PredType::NATIVE_FLOAT, dataspace, prop);
   
@@ -407,13 +406,13 @@ int main(int argc, char **argv)
       hsize_t dims[ndims], dimsmax[ndims];
       dataspace.getSimpleExtentDims(dims, dimsmax);
 
-      hsize_t dimsinc[] = { L*N, dims[1] };
+      hsize_t dimsinc[] = { N, dims[1] };
       hsize_t dimsext[] = { dims[0] + dimsinc[0], dims[1] };
       dataset.extend( dimsext );
-      hsize_t dimsoffset[] = { dims[0] - L*N, 0 };
+      hsize_t dimsoffset[] = { dims[0] - N, 0 };
       dataspace.selectHyperslab( H5S_SELECT_SET, dimsinc, dimsoffset );
-      float data[L*N*M];
-      for (int j = 0; j < L*N; j++)
+      float data[N*M];
+      for (int j = 0; j < N; j++)
 	for (int i = 0; i < M; i++)
 	  {
 	    data[j*M+i] = array_I[i][j] * array_I[i][j] + array_Q[i][j] * array_Q[i][j];
@@ -426,7 +425,7 @@ int main(int argc, char **argv)
 	usleep((500-elapsed)*1000);
 #endif
 #if 0
-      for (int j = 0; j < L*N; j++)
+      for (int j = 0; j < N; j++)
 	{
 	  cout << array_I[0][j] << endl;
 	}
@@ -458,8 +457,8 @@ int main(int argc, char **argv)
       //continue;
       //cout << "qpd" << endl;
       // ...
-      memmove((char *)sigbuf, (char *)&sigbuf[L*FS/2], L*FS/2*sizeof(float));
-      iwavFile.read(reinterpret_cast<char*>(&sigbuf[L*FS/2]), L*FS/2*sizeof(float));
+      memmove((char *)sigbuf, (char *)&sigbuf[FS/2], FS/2*sizeof(float));
+      iwavFile.read(reinterpret_cast<char*>(&sigbuf[FS/2]), FS/2*sizeof(float));
       if (iwavFile.eof())
 	break;
       if (iwavFile.fail())
@@ -469,7 +468,7 @@ int main(int argc, char **argv)
 	}
 #if 0
       // Clean up
-      for (int i = L*FS/2; i < L*FS; i++)
+      for (int i = FS/2; i < FS; i++)
 	if (!isfinite(sigbuf[i]))
 	  {
 	    sigbuf[i] = 0;
