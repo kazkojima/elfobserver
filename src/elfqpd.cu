@@ -215,10 +215,18 @@ int main(int argc, char **argv)
   char *ifname;
   char *ofname;
   int optind = 1;
+  bool quiet = false;
   wav_hdr_com wavcom;
   wav_hdr wav;
   wav_hdr_ex wavex;
   wav_fmt wavfmt;
+
+  if (optind < argc && argv[optind][0] == '-' && argv[optind][1] == 'q')
+    {
+      // If -q is given, surpress messages except the maximal rank info.
+      quiet = true;
+      optind++;
+    }
 
   if (optind < argc)
     ifname = argv[optind++];
@@ -228,10 +236,13 @@ int main(int argc, char **argv)
   if (optind < argc)
     ofname = argv[optind];
   else
-    ofname = (char *)"qpdout.h5";
+    ofname = (char *)"/tmp/qpddata-trash.h5";
 
-  std::cout << "input filename " << ifname << std::endl;
-  std::cout << "output filename " << ofname << std::endl;
+  if (!quiet)
+    {
+      std::cout << "input filename " << ifname << std::endl;
+      std::cout << "output filename " << ofname << std::endl;
+    }
   //return 0;
 
   std::string ifnstr(ifname);
@@ -325,7 +336,8 @@ int main(int argc, char **argv)
     }
 
   // Check WAV format
-  std::cout << "wav chunk size " << fsize << std::endl;
+  if (!quiet)
+    std::cout << "wav chunk size " << fsize << std::endl;
  
   // Compute test function tables
   double alpha = alpha0;
@@ -372,7 +384,6 @@ int main(int argc, char **argv)
 	//std::cout << "not finite signal value" << std::endl;
       }
 #endif
-
   H5::Exception::dontPrint(); // make this progam silent against exceptions.
   H5::H5File file(ofname, H5F_ACC_TRUNC);
   hsize_t dims[] = { N, M }, dimsmax[] = { H5S_UNLIMITED, M };
@@ -382,9 +393,14 @@ int main(int argc, char **argv)
   hsize_t dimschunk[] = { N, M };
   prop.setChunk(sizeof(dims) / sizeof(hsize_t), dimschunk);
   H5::DataSet dataset = file.createDataSet("/qpddataset", H5::PredType::NATIVE_FLOAT, dataspace, prop);
-  
+
   int err = 0;
   int index = 0;
+  float u_maxval = 0;
+  float u_mean = 0;
+  float u_toff = 0;
+  int u_alpha = 0;
+
   while (1)
     {
       // QPD
@@ -447,12 +463,22 @@ int main(int argc, char **argv)
 	    }
 	}
       mean /= M;
-      float rank = maxval/mean;
-      std::cout << "rank " << rank << " (mean " << mean << " max " << maxval  << ")" << std::endl;
-      std::cout << "toff " << maxargx*0.01 + index*0.5 << " alpha " << alpha0 + maxargy*alpha_step << std::endl;
-      //cout << "mean " << mean << endl;
-      //cout << "max " << maxval << endl;
-      //cout << "maxval " << maxargx << ", " << maxargy << endl;
+      if (quiet)
+	{
+	  if (u_maxval < maxval)
+	    {
+	      u_maxval = maxval;
+	      u_mean = mean;
+	      u_toff = maxargx*0.01 + index*0.5;
+	      u_alpha = alpha0 + maxargy*alpha_step;
+	    }
+	}
+      else
+	{
+	  float rank = maxval/mean;
+	  std::cout << "rank " << rank << " (mean " << mean << " max " << maxval  << ")" << std::endl;
+	  std::cout << "toff " << maxargx*0.01 + index*0.5 << " alpha " << alpha0 + maxargy*alpha_step << std::endl;
+	}
       index++;
       //continue;
       //cout << "qpd" << endl;
@@ -477,6 +503,9 @@ int main(int argc, char **argv)
 #endif
     }
 
+  if (quiet)
+    std::cout << u_maxval << "," << u_mean << "," << u_toff << "," << u_alpha << std::endl;
+
   dataset.close();
   file.close();
 
@@ -494,5 +523,6 @@ int main(int argc, char **argv)
       cout << "input file is corupted" << endl;
       return EXIT_FAILURE;
     }
-  cout << "done" << endl;
+  if (!quiet)
+    cout << "done" << endl;
 }
