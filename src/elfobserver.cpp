@@ -25,6 +25,8 @@ const int FS = 96000;
 const int SIGNAL_RATE_PER_MS = 96;
 const int VSIZE = (4 + SIGNAL_RATE_PER_MS)*4;
 
+const uint32_t TS_RESET = std::byteswap(0xfffffffe);
+
 // net
 const int SIGPORT = 5992;
 char *qpd_host_addr = (char *)"10.253.253.12";
@@ -159,7 +161,7 @@ public:
   }
 };
 
-// Imp]ulse noise detector
+// Impulse noise detector
 
 template<typename Sample, size_t Length> class ImpulseNoiseDetector {
 private:
@@ -727,6 +729,13 @@ int main(int argc, char **argv)
 	  break;
 	}
 
+      if (((uint32_t *)vbuf)[1] == TS_RESET)
+	{
+	  raw_index = 0;
+	  //std::cout << "got reset packet" << std::endl;
+	  continue;
+	}
+
       for (size_t i = 0; i < SIGNAL_RATE_PER_MS; i += 2)
 	{
 	  phases[0] = sigbuf[i]/float(1LL<<31);
@@ -742,8 +751,10 @@ int main(int argc, char **argv)
 #endif
 	  q0.produce(hbsig);
 	  raw_buf[raw_cur][raw_index] = hbsig;
-	  if (raw_index == 0 || raw_index == RAWSIZE*NBUF)
+	  if (raw_index == 0)
 	    raw_time[raw_cur] = ((uint32_t *)vbuf)[1];
+	  else if (raw_index == RAWSIZE*NBUF)
+	    raw_time[~raw_cur & 1] = ((uint32_t *)vbuf)[1];
 	  if (++raw_index == RAWSIZE*(NBUF+1))
 	    {
 	      memcpy((char *)&raw_buf[~raw_cur & 1][0],
