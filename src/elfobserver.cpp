@@ -42,6 +42,7 @@ struct report {
 
 int watermark = 15;
 float output_rate = 1.0;
+float input_volume = 1.0;
 
 // half band raw signal and report double buffers
 const int NBUF = 20;
@@ -315,7 +316,7 @@ public:
 	impdet.process(sig_in, &xi, 2*delta);
 	x.push_back(xi);
 	yi = xi;
-	reduceimp.process(x.front(), x.back(), &tmp, 0.1);
+	reduceimp.process(x.front(), x.back(), &tmp, 0.05);
 	y.push_back(yi);
 	output.produce(yi);
       }
@@ -334,11 +335,11 @@ public:
 	if (imp == false)
 	  {
 	    yi = xi;
-	    reduceimp.process(x.front(), x.back(), &tmp, 0.1);
+	    reduceimp.process(x.front(), x.back(), &tmp, 0.05);
 	  }
 	else
 	  {
-	    reduceimp.process(y.back(), 0.0, &yi, 0.1, false);
+	    reduceimp.process(y.back(), 0.0, &yi, 0.05, false);
 	  }
 #if 1
 	if (yi < -1.0 || yi > 1.0)
@@ -551,6 +552,7 @@ int main(int argc, char **argv)
     {"qpdhost", required_argument, NULL, 'q'}, 
     {"watermark", required_argument, NULL, 'w'},
     {"rate", required_argument, NULL, 'r'},
+    {"volume", required_argument, NULL, 'v'},
     {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
     {"help", no_argument, NULL, 'h'},
@@ -563,7 +565,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:nsh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:v:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -632,6 +634,24 @@ int main(int argc, char **argv)
 	      std::cout << "-r option requires float arg" << std::endl;
 	    }
 	  break;
+	case 'v':
+	  if (optarg)
+	    {
+	      char *end;
+	      float vol = std::strtof(optarg, &end);
+	      if (vol >= 0 && vol <= 2.0)
+		{
+		  input_volume = vol;
+		  std::cout << "setting input volume to " << vol << std::endl;
+		}
+	      else
+		std::cout << "wrong input volume value " << vol << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-v option requires float arg" << std::endl;
+	    }
+	  break;
 	case 'n':
 	  print_info = false;
 	  break;
@@ -647,6 +667,7 @@ int main(int argc, char **argv)
 	  std::cout << "-q, --qpdhost=host:port\tset qpd host address&port" << std::endl;
 	  std::cout << "-w, --watermark=N\tset watermark" << std::endl;
 	  std::cout << "-r, --rate=F\tset output rate" << std::endl;
+	  std::cout << "-v, --volume=F\tset input volume" << std::endl;
 	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
@@ -738,8 +759,8 @@ int main(int argc, char **argv)
 
       for (size_t i = 0; i < SIGNAL_RATE_PER_MS; i += 2)
 	{
-	  phases[0] = sigbuf[i]/float(1LL<<31);
-	  phases[1] = sigbuf[i + 1]/float(1LL<<31);
+	  phases[0] = input_volume * (sigbuf[i]/float(1LL<<31));
+	  phases[1] = input_volume * (sigbuf[i + 1]/float(1LL<<31));
 
 	  float hbsig = halfbandfir.processDown(phases);
 #if 1

@@ -22,7 +22,7 @@ This is the main application for real-time monitoring.
 This acts as the backend computation engine for elfobserver.
 
 *  Functionality: A TCP server that accepts signal data chunks from the observer.
-* Algorithm: Implements a Quadratic Phase Detector (QPD). It convolves the input signal with a set of reference chirp functions (cosine and sine waves with varying frequency rates/alphas). These chirp functions are the part of ["whistler" waves](https://en.wikipedia.org/wiki/Whistler_\(radio\)).
+* Algorithm: Implements a Quadratic Phase Detector (QPD). It convolves the input signal with a set of reference chirp functions (cosine and sine waves with varying frequency rates/alphas). These chirp functions are the part of ["whistler" waves](https://en.wikipedia.org/wiki/Whistler_\(radio\)) of which frequency are inversely propotional to the square of time.
 * Acceleration: It uses CUDA kernels (conv_partial) to parallelize the heavy convolution operations on an NVIDIA GPU.
 * Output: Returns a statistical report (mean value, max value, and peak coordinates) back to the client.
 
