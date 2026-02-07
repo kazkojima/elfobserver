@@ -43,6 +43,7 @@ struct report {
 int watermark = 15;
 float output_rate = 1.0;
 float input_volume = 1.0;
+float detect_ratio = 11;
 
 // half band raw signal and report double buffers
 const int NBUF = 20;
@@ -305,6 +306,7 @@ public:
 
     size_t delta = 60;
     size_t M = 960;
+    float ratio = detect_ratio;
     float sig_in;
     float xi, yi;//, zi;
     bool imp;
@@ -313,7 +315,7 @@ public:
     for (size_t i = 0; i < M; i++)
       {
 	sig_in = input.consume();
-	impdet.process(sig_in, &xi, 2*delta);
+	impdet.process(sig_in, &xi, 2*delta, ratio);
 	x.push_back(xi);
 	yi = xi;
 	reduceimp.process(x.front(), x.back(), &tmp, 0.05);
@@ -330,7 +332,7 @@ public:
 	    std::cout << "ImpulseReduction input value check failed " << sig_in << std::endl;
 	  }
 #endif
-	imp = impdet.process(sig_in, &xi, 2*delta);
+	imp = impdet.process(sig_in, &xi, 2*delta, ratio);
 	x.push_back(xi);
 	if (imp == false)
 	  {
@@ -395,7 +397,7 @@ bool writeRepo(struct report *r)
       if (rank > maxrank)
 	maxrank = rank;
 #if 1
-      if (100 < r[i].max_value)
+      if (400 * input_volume < r[i].max_value)
 	std::cout << "suspicious high max: " << r[i].max_value << std::endl;
 #endif
      }
@@ -553,6 +555,7 @@ int main(int argc, char **argv)
     {"watermark", required_argument, NULL, 'w'},
     {"rate", required_argument, NULL, 'r'},
     {"volume", required_argument, NULL, 'v'},
+    {"detect-ratio", required_argument, NULL, 'd'},
     {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
     {"help", no_argument, NULL, 'h'},
@@ -565,7 +568,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:v:nsh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:v:d:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -652,6 +655,24 @@ int main(int argc, char **argv)
 	      std::cout << "-v option requires float arg" << std::endl;
 	    }
 	  break;
+	case 'd':
+	  if (optarg)
+	    {
+	      char *end;
+	      float ratio = std::strtof(optarg, &end);
+	      if (ratio >= 6 && ratio < 20)
+		{
+		  detect_ratio = ratio;
+		  std::cout << "setting detect-ratio to " << ratio << std::endl;
+		}
+	      else
+		std::cout << "wrong detect-ratio value " << ratio << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-r option requires float arg" << std::endl;
+	    }
+	  break;
 	case 'n':
 	  print_info = false;
 	  break;
@@ -668,6 +689,7 @@ int main(int argc, char **argv)
 	  std::cout << "-w, --watermark=N\tset watermark" << std::endl;
 	  std::cout << "-r, --rate=F\tset output rate" << std::endl;
 	  std::cout << "-v, --volume=F\tset input volume" << std::endl;
+	  std::cout << "-d, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
 	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
