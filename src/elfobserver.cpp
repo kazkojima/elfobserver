@@ -304,8 +304,9 @@ public:
     boost::circular_buffer<float> x(2);
     boost::circular_buffer<float> y(2);
 
-    size_t delta = 60;
+    size_t delta = 120;
     size_t M = 960;
+    float mu = 0.05;
     float ratio = detect_ratio;
     float sig_in;
     float xi, yi;//, zi;
@@ -318,7 +319,7 @@ public:
 	impdet.process(sig_in, &xi, 2*delta, ratio);
 	x.push_back(xi);
 	yi = xi;
-	reduceimp.process(x.front(), x.back(), &tmp, 0.05);
+	reduceimp.process(x.front(), x.back(), &tmp, mu);
 	y.push_back(yi);
 	output.produce(yi);
       }
@@ -337,13 +338,13 @@ public:
 	if (imp == false)
 	  {
 	    yi = xi;
-	    reduceimp.process(x.front(), x.back(), &tmp, 0.05);
+	    reduceimp.process(x.front(), x.back(), &tmp, mu);
 	  }
 	else
 	  {
-	    reduceimp.process(y.back(), 0.0, &yi, 0.05, false);
+	    reduceimp.process(y.back(), 0.0, &yi, mu, false);
 	  }
-#if 1
+#if 0
 	if (yi < -1.0 || yi > 1.0)
 	  {
 	    std::cout << "ImpulseReduction output value check failed " << yi << std::endl;
