@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <getopt.h>
+#include <alsa/asoundlib.h>
 
 using namespace std;
 
@@ -31,6 +32,9 @@ const uint32_t TS_RESET = std::byteswap(0xfffffffe);
 const int SIGPORT = 5992;
 char *qpd_host_addr = (char *)"10.253.253.12";
 int qpd_tcp_port = 5992;
+
+// pcm monitor
+const int PCM_MONITOR_NCH = 2;
 
 // QPD report
 struct report {
@@ -557,6 +561,7 @@ int main(int argc, char **argv)
     {"rate", required_argument, NULL, 'r'},
     {"volume", required_argument, NULL, 'v'},
     {"detect-ratio", required_argument, NULL, 'd'},
+    {"monitor", required_argument, NULL, 'm'},
     {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
     {"help", no_argument, NULL, 'h'},
@@ -564,12 +569,13 @@ int main(int argc, char **argv)
   int c;
   char hostname[16];
   bool format_wav = true;
+  snd_pcm_t *monitor = NULL;
   wav_hdr wav;
 
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:v:d:nsh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:v:d:m:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -671,7 +677,45 @@ int main(int argc, char **argv)
 	    }
 	  else
 	    {
-	      std::cout << "-r option requires float arg" << std::endl;
+	      std::cout << "-d option requires float arg" << std::endl;
+	    }
+	  break;
+	case 'm':
+	  if (optarg)
+	    {
+	       if (snd_pcm_open(&monitor, optarg, SND_PCM_STREAM_PLAYBACK,
+				SND_PCM_NONBLOCK) < 0)
+		 {
+		   std::cout << "can't open pcm device " << optarg << std::endl;
+		   monitor = NULL;
+		}
+	       else
+		 {
+		   snd_pcm_hw_params_t *params;
+		   snd_pcm_hw_params_alloca(&params);
+		   snd_pcm_hw_params_any(monitor, params);
+		   snd_pcm_hw_params_set_access(monitor, params,
+						SND_PCM_ACCESS_RW_INTERLEAVED);
+		   snd_pcm_hw_params_set_format(monitor, params,
+						SND_PCM_FORMAT_S16_LE); // 16bit LE
+		   snd_pcm_hw_params_set_channels(monitor, params,
+						  PCM_MONITOR_NCH);
+		   unsigned int rate = FS/2;
+		   int dir;
+		   snd_pcm_hw_params_set_rate_near(monitor, params, &rate, &dir);
+		   if (snd_pcm_hw_params(monitor, params) < 0)
+		     {
+		       std::cout << "can't apply pcm parameter to " << optarg << std::endl;
+		       snd_pcm_close(monitor);
+		       monitor = NULL;
+		     }
+		   else
+		     std::cout << "settig monitor " << optarg << std::endl;
+		 }
+	    }
+	  else
+	    {
+	      std::cout << "-m option requires float arg" << std::endl;
 	    }
 	  break;
 	case 'n':
@@ -799,6 +843,41 @@ int main(int argc, char **argv)
 	    raw_time[raw_cur] = ((uint32_t *)vbuf)[1];
 	  else if (raw_index == RAWSIZE*NBUF)
 	    raw_time[~raw_cur & 1] = ((uint32_t *)vbuf)[1];
+#if 1
+	  if ((raw_index % RAWSIZE) == RAWSIZE-1)
+	    {
+	      // monitor out
+	      //std::cout << "monitor out" << std::endl;
+	      if (monitor)
+		{
+		  int16_t buffer[RAWSIZE*PCM_MONITOR_NCH];
+		  snd_pcm_sframes_t avail = snd_pcm_avail(monitor);
+		  //std::cout << "monitor avail " << avail << std::endl;
+		  if (avail >= RAWSIZE)
+		    avail = RAWSIZE;
+		  for (snd_pcm_sframes_t i = 0; i < avail; ++i)
+		    {
+		      float v = raw_buf[raw_cur][raw_index - (RAWSIZE-1) + i];
+		      //v *= 10;
+		      v = std::clamp(v, -0.999f, 0.999f);
+		      if (PCM_MONITOR_NCH == 2)
+			{
+			  buffer[2*i] = (int16_t) (v * (1 << 15));
+			  buffer[2*i+1] = (int16_t) (v * (1 << 15));
+			}
+		      else // if (PCM_MONITOR_NCH == 1)
+			buffer[i] = (int16_t) (v * (1 << 15));
+		    }
+		  if (avail > 0)
+		    {
+		      snd_pcm_sframes_t n;
+		      n = snd_pcm_writei(monitor, buffer, avail);
+		      if (n < 0)
+			std::cout << "monitor write err " << -n << std::endl;
+		    }
+		}
+	    }
+#endif
 	  if (++raw_index == RAWSIZE*(NBUF+1))
 	    {
 	      memcpy((char *)&raw_buf[~raw_cur & 1][0],
@@ -852,6 +931,12 @@ int main(int argc, char **argv)
 #endif
 
   close(sigsock);
+
+  if (monitor)
+    {
+      snd_pcm_drain(monitor);
+      snd_pcm_close(monitor);
+    }
 
   // Formal cleanup
   ith.join();
