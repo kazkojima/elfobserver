@@ -22,6 +22,10 @@
 
 using namespace std;
 
+#ifndef FLT_EPSILON
+#define FLT_EPSILON std::numeric_limits<float>::epsilon()
+#endif
+
 const int FS = 96000;
 const int SIGNAL_RATE_PER_MS = 96;
 const int VSIZE = (4 + SIGNAL_RATE_PER_MS)*4;
@@ -34,7 +38,7 @@ char *qpd_host_addr = (char *)"10.253.253.12";
 int qpd_tcp_port = 5992;
 
 // pcm monitor
-const int PCM_MONITOR_NCH = 2;
+const int n_pcm_monitor_ch = 2;
 
 // QPD report
 struct report {
@@ -398,7 +402,7 @@ bool writeRepo(struct report *r)
   float maxrank = 0;
   for (int i = 0; i < NBUF; i++)
     {
-      float rank = r[i].max_value/r[i].mean_value;
+      float rank = r[i].max_value/(r[i].mean_value+FLT_EPSILON);
       if (rank > maxrank)
 	maxrank = rank;
 #if 1
@@ -454,7 +458,7 @@ bool writeRepo(struct report *r)
 #if 0
       for (size_t i = 0; i < NBUF; i++)
 	{
-	  float rank = r[i].max_value/r[i].mean_value;
+	  float rank = r[i].max_value/(r[i].mean_value+FLT_EPSILON);
 	  std::cout << "rank " << rank << " (mean " << r[i].mean_value << " max " << r[i].max_value  << ")" << std::endl;
 	  std::cout << "toff " << r[i].argmax_x*0.01 + i*0.5 << std::endl;
 	  std::cout << "alpha " << r[i].argmax_y + 2300 << std::endl;
@@ -527,6 +531,7 @@ public:
 		    std::cout << "mean " << repo.mean_value << std::endl;
 		    std::cout << "max " << repo.max_value << std::endl;
 		    std::cout << "maxval " << repo.argmax_x << ", " << repo.argmax_y << std::endl;
+		    //std::cout << "rank " << repo.max_value/(repo.mean_value+FLT_EPSILON) << std::endl;
 #endif
 		    std::unique_lock<std::mutex> lock(repo_mtx);
 		    repo_buf[repo_cur][repo_index] = repo;
@@ -570,6 +575,7 @@ int main(int argc, char **argv)
   char hostname[16];
   bool format_wav = true;
   snd_pcm_t *monitor = NULL;
+  bool check_avail_zero = true;
   wav_hdr wav;
 
   while (1)
@@ -699,7 +705,7 @@ int main(int argc, char **argv)
 		   snd_pcm_hw_params_set_format(monitor, params,
 						SND_PCM_FORMAT_S16_LE); // 16bit LE
 		   snd_pcm_hw_params_set_channels(monitor, params,
-						  PCM_MONITOR_NCH);
+						  n_pcm_monitor_ch);
 		   unsigned int rate = FS/2;
 		   int dir;
 		   snd_pcm_hw_params_set_rate_near(monitor, params, &rate, &dir);
@@ -711,6 +717,8 @@ int main(int argc, char **argv)
 		     }
 		   else
 		     std::cout << "settig monitor " << optarg << std::endl;
+		   if (monitor)
+		     snd_pcm_prepare(monitor);
 		 }
 	    }
 	  else
@@ -736,6 +744,7 @@ int main(int argc, char **argv)
 	  std::cout << "-v, --volume=F\tset input volume" << std::endl;
 	  std::cout << "-d, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
 	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
+	  std::cout << "-m, --monitor=\"hw:C,D\"\taudio monitor device" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
 	  return 0;
@@ -850,9 +859,14 @@ int main(int argc, char **argv)
 	      //std::cout << "monitor out" << std::endl;
 	      if (monitor)
 		{
-		  int16_t buffer[RAWSIZE*PCM_MONITOR_NCH];
+		  int16_t buffer[RAWSIZE*n_pcm_monitor_ch];
 		  snd_pcm_sframes_t avail = snd_pcm_avail(monitor);
-		  //std::cout << "monitor avail " << avail << std::endl;
+		  if (avail == 0 && check_avail_zero)
+		    {
+		      // report one time only
+		      check_avail_zero = false;
+		      std::cout << "monitor avail " << avail << std::endl;
+		    }
 		  if (avail >= RAWSIZE)
 		    avail = RAWSIZE;
 		  for (snd_pcm_sframes_t i = 0; i < avail; ++i)
@@ -860,12 +874,12 @@ int main(int argc, char **argv)
 		      float v = raw_buf[raw_cur][raw_index - (RAWSIZE-1) + i];
 		      //v *= 10;
 		      v = std::clamp(v, -0.999f, 0.999f);
-		      if (PCM_MONITOR_NCH == 2)
+		      if (n_pcm_monitor_ch == 2)
 			{
 			  buffer[2*i] = (int16_t) (v * (1 << 15));
 			  buffer[2*i+1] = (int16_t) (v * (1 << 15));
 			}
-		      else // if (PCM_MONITOR_NCH == 1)
+		      else // if (n_pcm_monitor_ch == 1)
 			buffer[i] = (int16_t) (v * (1 << 15));
 		    }
 		  if (avail > 0)
@@ -873,7 +887,17 @@ int main(int argc, char **argv)
 		      snd_pcm_sframes_t n;
 		      n = snd_pcm_writei(monitor, buffer, avail);
 		      if (n < 0)
-			std::cout << "monitor write err " << -n << std::endl;
+			{
+			  //std::cout << "monitor write err " << -n << std::endl;
+			  int err = snd_pcm_recover(monitor, n, 0);
+			  if (err < 0)
+			    {
+			      std::cout << "monitor recover failed " << snd_strerror(err) << std::endl;
+			      snd_pcm_drain(monitor);
+			      snd_pcm_close(monitor);
+			      monitor = NULL;
+			    }
+			}
 		    }
 		}
 	    }
