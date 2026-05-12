@@ -553,6 +553,43 @@ public:
   }
 };
 
+snd_pcm_t *open_monitor(const char *name)
+{
+  snd_pcm_t *monitor = NULL;
+  if (snd_pcm_open(&monitor, name, SND_PCM_STREAM_PLAYBACK,
+		   SND_PCM_NONBLOCK) < 0)
+    {
+      std::cout << "can't open pcm device " << name << std::endl;
+      monitor = NULL;
+    }
+  else
+    {
+      snd_pcm_hw_params_t *params;
+      snd_pcm_hw_params_alloca(&params);
+      snd_pcm_hw_params_any(monitor, params);
+      snd_pcm_hw_params_set_access(monitor, params,
+				   SND_PCM_ACCESS_RW_INTERLEAVED);
+      snd_pcm_hw_params_set_format(monitor, params,
+				   SND_PCM_FORMAT_S16_LE); // 16bit LE
+      snd_pcm_hw_params_set_channels(monitor, params,
+				     n_pcm_monitor_ch);
+      unsigned int rate = FS/2;
+      int dir;
+      snd_pcm_hw_params_set_rate_near(monitor, params, &rate, &dir);
+      if (snd_pcm_hw_params(monitor, params) < 0)
+	{
+	  std::cout << "can't apply pcm parameter to " << optarg << std::endl;
+	  snd_pcm_close(monitor);
+	  monitor = NULL;
+	}
+      else
+	std::cout << "settig monitor " << optarg << std::endl;
+      if (monitor)
+	snd_pcm_prepare(monitor);
+    }
+  return monitor;
+}
+
 int main(int argc, char **argv)
 {
   ThreadSafeQueue<float> q0(FS/2), q1(FS/2), q2(FS/2);
@@ -574,7 +611,9 @@ int main(int argc, char **argv)
   int c;
   char hostname[16];
   bool format_wav = true;
+  char *monitor_name = NULL;
   snd_pcm_t *monitor = NULL;
+  int monitor_reopen_timer = 0;
   bool check_avail_zero = true;
   wav_hdr wav;
 
@@ -689,37 +728,8 @@ int main(int argc, char **argv)
 	case 'm':
 	  if (optarg)
 	    {
-	       if (snd_pcm_open(&monitor, optarg, SND_PCM_STREAM_PLAYBACK,
-				SND_PCM_NONBLOCK) < 0)
-		 {
-		   std::cout << "can't open pcm device " << optarg << std::endl;
-		   monitor = NULL;
-		}
-	       else
-		 {
-		   snd_pcm_hw_params_t *params;
-		   snd_pcm_hw_params_alloca(&params);
-		   snd_pcm_hw_params_any(monitor, params);
-		   snd_pcm_hw_params_set_access(monitor, params,
-						SND_PCM_ACCESS_RW_INTERLEAVED);
-		   snd_pcm_hw_params_set_format(monitor, params,
-						SND_PCM_FORMAT_S16_LE); // 16bit LE
-		   snd_pcm_hw_params_set_channels(monitor, params,
-						  n_pcm_monitor_ch);
-		   unsigned int rate = FS/2;
-		   int dir;
-		   snd_pcm_hw_params_set_rate_near(monitor, params, &rate, &dir);
-		   if (snd_pcm_hw_params(monitor, params) < 0)
-		     {
-		       std::cout << "can't apply pcm parameter to " << optarg << std::endl;
-		       snd_pcm_close(monitor);
-		       monitor = NULL;
-		     }
-		   else
-		     std::cout << "settig monitor " << optarg << std::endl;
-		   if (monitor)
-		     snd_pcm_prepare(monitor);
-		 }
+	      monitor_name = optarg;
+	      monitor = open_monitor(monitor_name);
 	    }
 	  else
 	    {
@@ -859,6 +869,30 @@ int main(int argc, char **argv)
 	      //std::cout << "monitor out" << std::endl;
 	      if (monitor)
 		{
+		  if (snd_pcm_state(monitor) == SND_PCM_STATE_DISCONNECTED)
+		    {
+		      std::cout << "monitor disconnected" << std::endl;
+		      snd_pcm_drain(monitor);
+		      snd_pcm_close(monitor);
+		      monitor = NULL;
+		      // wait reconnect 8sec
+		      monitor_reopen_timer = 16;
+		    }
+		}
+	      else if (monitor_name && monitor_reopen_timer > 0)
+		{
+		  if (--monitor_reopen_timer == 0)
+		    {
+		      //std::cout << "monitor reopen tried" << std::endl;
+		      monitor = open_monitor(monitor_name);
+		      if (monitor)
+			std::cout << "monitor reopen" << monitor_name << std::endl;
+		      else
+			std::cout << "monitor reopen failed" << std::endl;
+		    }
+		}
+	      if (monitor)
+		{
 		  int16_t buffer[RAWSIZE*n_pcm_monitor_ch];
 		  snd_pcm_sframes_t avail = snd_pcm_avail(monitor);
 		  if (avail == 0 && check_avail_zero)
@@ -888,7 +922,7 @@ int main(int argc, char **argv)
 		      n = snd_pcm_writei(monitor, buffer, avail);
 		      if (n < 0)
 			{
-			  //std::cout << "monitor write err " << -n << std::endl;
+			  std::cout << "monitor write err " << -n << std::endl;
 			  int err = snd_pcm_recover(monitor, n, 0);
 			  if (err < 0)
 			    {
@@ -897,6 +931,10 @@ int main(int argc, char **argv)
 			      snd_pcm_close(monitor);
 			      monitor = NULL;
 			    }
+			}
+		      else if (n < avail)
+			{
+			  std::cout << "monitor write imcomplete " << (avail-n) << std::endl;
 			}
 		    }
 		}
