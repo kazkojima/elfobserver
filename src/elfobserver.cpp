@@ -21,6 +21,10 @@
 
 using namespace std;
 
+#ifndef FLT_EPSILON
+#define FLT_EPSILON std::numeric_limits<float>::epsilon()
+#endif
+
 const int FS = 96000;
 const int SIGNAL_RATE_PER_MS = 96;
 const int VSIZE = (4 + SIGNAL_RATE_PER_MS)*4;
@@ -394,7 +398,7 @@ bool writeRepo(struct report *r)
   float maxrank = 0;
   for (int i = 0; i < NBUF; i++)
     {
-      float rank = r[i].max_value/r[i].mean_value;
+      float rank = r[i].max_value/(r[i].mean_value+FLT_EPSILON);
       if (rank > maxrank)
 	maxrank = rank;
 #if 1
@@ -450,7 +454,7 @@ bool writeRepo(struct report *r)
 #if 0
       for (size_t i = 0; i < NBUF; i++)
 	{
-	  float rank = r[i].max_value/r[i].mean_value;
+	  float rank = r[i].max_value/(r[i].mean_value+FLT_EPSILON);
 	  std::cout << "rank " << rank << " (mean " << r[i].mean_value << " max " << r[i].max_value  << ")" << std::endl;
 	  std::cout << "toff " << r[i].argmax_x*0.01 + i*0.5 << std::endl;
 	  std::cout << "alpha " << r[i].argmax_y + 2300 << std::endl;
