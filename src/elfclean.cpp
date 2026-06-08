@@ -490,6 +490,8 @@ int main(int argc, char **argv)
 	  x.push_back(xi);
 	  yi = xi;
 	  reduceimp.process(x.front(), x.back(), &tmp, 0.05);
+	  // Clamp yi
+	  yi = std::clamp(yi, -0.5f, 0.5f);
 	  y.push_back(yi);
 	  z.push_back(yi);
 	  reducewhite.process(z.back(), z.front(), &zi, 0.1);
@@ -513,6 +515,8 @@ int main(int argc, char **argv)
 		{
 		  reduceimp.process(y.back(), 0.0, &yi, 0.05, false);
 		}
+	      // Clamp yi
+	      yi = std::clamp(yi, -0.5f, 0.5f);
 	      y.push_back(yi);
 	    }
 	  if (skip_white)
@@ -558,6 +562,8 @@ int main(int argc, char **argv)
 	    {
 	      reduceimp.process(y.back(), 0.0, &yi, 0.05, false);
 	    }
+	  // Clamp yi
+	  yi = std::clamp(yi, -0.5f, 0.5f);
 	  y.push_back(yi);
 	}
       if (skip_white)
