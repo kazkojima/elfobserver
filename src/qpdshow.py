@@ -9,6 +9,7 @@ if len(sys.argv) < 2:
     exit()
 
 h5file = None
+imgfile = None
 title_string = None
 cmap = 'plasma'
 for i in range(1,len(sys.argv)):
@@ -22,8 +23,13 @@ for i in range(1,len(sys.argv)):
             h5file = argstr
         else:
             print('??? extra .h5 file')
+    elif argstr.endswith('.png'):
+        if imgfile == None:
+            imgfile = argstr
+        else:
+            print('??? extra .png file')
     elif argstr == '-h' or argstr == '--help':
-        print('usage: python '+sys.argv[0] + ' qpd_data_file.h5 --title=title_string')
+        print('usage: python '+sys.argv[0] + ' qpd_data_file.h5 [image_file.png] --title=title_string')
         exit()
     else:
         print('extra argument: ' + argstr)
@@ -39,4 +45,7 @@ plt.ylabel('curve coeff')
 if title_string != None:
     plt.title(title_string)
 plt.colorbar(im)
-plt.show()
+if imgfile:
+    plt.savefig(imgfile)
+else:
+    plt.show()
