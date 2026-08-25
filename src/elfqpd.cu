@@ -220,6 +220,7 @@ int main(int argc, char **argv)
   wav_hdr wav;
   wav_hdr_ex wavex;
   wav_fmt wavfmt;
+  size_t len;
 
   if (optind < argc && argv[optind][0] == '-' && argv[optind][1] == 'q')
     {
@@ -237,6 +238,20 @@ int main(int argc, char **argv)
     ofname = argv[optind];
   else
     ofname = (char *)"/tmp/qpddata-trash.h5";
+
+  // Check finenames
+  len = strlen(ifname);
+  if (strcmp(&ifname[len-4], ".wav") != 0)
+    {
+      std::cout << "input filename " << ifname << " doesn't end with .wav" << std::endl;
+      return EXIT_FAILURE;
+    }
+  len = strlen(ofname);
+  if (strcmp(&ofname[len-3], ".h5") != 0)
+    {
+      std::cout << "output filename " << ofname << " doesn't end with .h5" << std::endl;
+      return EXIT_FAILURE;
+    }
 
   if (!quiet)
     {
@@ -319,7 +334,8 @@ int main(int argc, char **argv)
       else
 	{
 	  chunksize = subchunk.SubChunkSize;
-	  std::cout << "unknown subchunk id "
+	  if (!quiet)
+	     std::cout << "unknown subchunk id "
 		    << subchunk.SubChunkID[0]
 		    << subchunk.SubChunkID[1]
 		    << subchunk.SubChunkID[2]
