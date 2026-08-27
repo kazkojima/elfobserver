@@ -11,6 +11,7 @@ if len(sys.argv) < 2:
 h5file = None
 imgfile = None
 title_string = None
+marking = False
 cmap = 'plasma'
 for i in range(1,len(sys.argv)):
     argstr = sys.argv[i]
@@ -28,18 +29,30 @@ for i in range(1,len(sys.argv)):
             imgfile = argstr
         else:
             print('??? extra .png file')
+    elif argstr == '--mark':
+        marking = True
     elif argstr == '-h' or argstr == '--help':
-        print('usage: python '+sys.argv[0] + ' qpd_data_file.h5 [image_file.png] --title=title_string')
+        print('usage: python '+sys.argv[0] + ' qpd_data_file.h5 [image_file.png] [--title=title_string] [--cmap=cmap_name] [--mark]')
         exit()
     else:
         print('extra argument: ' + argstr)
 
-h5file = h5py.File(sys.argv[1], "r")
+if h5file == None:
+    print('no h5 file')
+    exit()
+
+h5file = h5py.File(h5file, "r")
 dset = h5file['/qpddataset']
 darray = dset[:]
 darray = darray[:-50,:]
 tend = darray.shape[0] * 0.01
-im = plt.imshow(darray.T / np.max(darray), origin='lower', extent=[0, tend, 2300, 2500], aspect='auto', cmap=cmap)
+na = darray.T / np.max(darray)
+im = plt.imshow(na, origin='lower', extent=[0, tend, 2300, 2500], aspect='auto', cmap=cmap)
+max_row, max_col = np.unravel_index(np.argmax(na), na.shape)
+max_x = (max_col / na.shape[1]) * tend
+max_y = max_row + 2300
+if marking:
+    plt.scatter(max_x, max_y, color="white", marker="x", s=30, linewidths=1, label="")
 plt.xlabel('time (sec)')
 plt.ylabel('curve coeff')
 if title_string != None:
