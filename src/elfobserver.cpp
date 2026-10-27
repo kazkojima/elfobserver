@@ -66,6 +66,10 @@ int repo_cur = 0; // 0 or 1
 int repo_index = 0;
 bool repo_recorded = false;
 
+// Refuse to record too noisy data and short "burst"
+float refuse_level = 2.0; // don't refuse
+float burst_ratio = 2.0; // don't check short burst
+
 // WAV
 typedef struct __attribute__((packed)) WAV_HEADER {
   /* RIFF Chunk Descriptor */
@@ -298,6 +302,117 @@ public:
   }
 };
 
+// Filters to detect "short burst"
+// 5.5kHz high pass filter and 10Hz low pass filter
+
+template<typename T> struct HighPassCoefficient {
+  static constexpr std::array<T, 19> h_a {
+    T(-5.4943582839e-04),
+    T(+2.1335183495e-03),
+    T(+8.0414019779e-03),
+    T(+1.5123752528e-02),
+    T(+1.2895626588e-02),
+    T(-1.2707974909e-02),
+    T(-6.7616023315e-02),
+    T(-1.4015945103e-01),
+    T(-2.0310883861e-01),
+    T(+7.7189484850e-01), // center tap
+    T(-2.0310883861e-01),
+    T(-1.4015945103e-01),
+    T(-6.7616023315e-02),
+    T(-1.2707974909e-02),
+    T(+1.2895626588e-02),
+    T(+1.5123752528e-02),
+    T(+8.0414019779e-03),
+    T(+2.1335183495e-03),
+    T(-5.4943582839e-04),
+  };
+};
+
+template<typename Sample, typename Coefficient> class HighPassFIR {
+private:
+  boost::circular_buffer<Sample> c_buf;
+
+public:
+  Sample process(Sample input)
+  {
+    c_buf.push_back(input);
+    auto output = Sample(0.0);
+    for (size_t i = 0; i < c_buf.size(); ++i)
+      output += c_buf[i]*Coefficient::h_a[i];
+    return output;
+  }
+
+  void reset()
+  {
+    c_buf.resize(Coefficient::h_a.size());
+  }
+};
+
+template<typename Sample> class LowPassBiquad {
+private:
+    Sample b0, b1, b2;
+    Sample a1, a2;
+
+    // buffers
+    Sample x1 = 0.0, x2 = 0.0;
+    Sample y1 = 0.0, y2 = 0.0;
+
+public:
+  LowPassBiquad(Sample cutoffHz, Sample sampleRateHz)
+  {
+    double q = 0.7071067811865476; 
+
+    // normalize frequency and compute coeffs of the transfer function
+    double omega = 2.0 * M_PI * cutoffHz / sampleRateHz;
+    Sample alpha = std::sin(omega) / (2.0 * q);
+    Sample cosOmega = std::cos(omega);
+    Sample a0 = 1.0 + alpha;
+    b0 = ((1.0 - cosOmega) / 2.0) / a0;
+    b1 = (1.0 - cosOmega) / a0;
+    b2 = ((1.0 - cosOmega) / 2.0) / a0;
+    a1 = (-2.0 * cosOmega) / a0;
+    a2 = (1.0 - alpha) / a0;
+  }
+
+  Sample process(Sample input)
+  {
+    float output = b0 * input + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+
+    // Update status
+    x2 = x1;
+    x1 = input;
+    y2 = y1;
+    y1 = output;
+
+    return output;
+  }
+
+  void reset()
+  {
+    x1 = x2 = y1 = y2 = 0.0;
+  }
+};
+
+// Compute "burst" size
+size_t burst_size(float *p, size_t size, float th)
+{
+  size_t w = 0;
+  size_t m = 0;
+  for (size_t i = 0; i < size; i++)
+    {
+      if (p[i] > th)
+	{
+	  w += 1;
+	  if (w > m)
+	    m = w;
+	}
+      else
+	w = 0;
+    }
+  return m;
+}
+
 // Pipeline workers
 
 class ImpulseReductionPipe {
@@ -419,7 +534,7 @@ bool writeRepo(struct report *r)
     }
   else
     recorded = maxrank > watermark ? true : false;
-      
+
   if (print_statistics)
     {
       int idx = std::clamp((int)maxrank, LOWWM, HIGHWM);
@@ -488,6 +603,14 @@ public:
     int hcount = 0;
     bool first = true;
     int n;
+
+    // These are not for line reduction but for detecting burst noise.
+    HighPassFIR<float, HighPassCoefficient<float>> hpf;
+    hpf.reset();
+    float cutoff = 10.0;
+    LowPassBiquad<float> lpf(cutoff, FS/2);
+    float *tbuf = (float *)malloc(RAWSIZE*(NBUF+1)*sizeof(float));
+
     for (;;)
       {
 	sig_in = input.consume();
@@ -537,8 +660,35 @@ public:
 		    repo_buf[repo_cur][repo_index] = repo;
 		    if (++repo_index == NBUF)
 		      {
-			// Write repo if needed
-			repo_recorded = writeRepo(repo_buf[repo_cur]);
+			if (refuse_level < 2.0 || burst_ratio < 2.0)
+			  {
+			    // "burst" check
+			    float *rbuf = &raw_buf[~raw_cur & 1][0];
+			    size_t size = RAWSIZE*(NBUF+1);
+			    float sum = 0;
+			    float ratio = burst_ratio;
+			    for (size_t i = 0; i < size; ++i)
+			      {
+				float out = hpf.process(rbuf[i]);
+				out = lpf.process(fabsf(out));
+				tbuf[i] = out;
+				sum += lpf.process(out);
+			      }
+
+			    float th = (sum / size)*ratio;
+			    size_t bsize = burst_size(tbuf, size, th);
+			    if (sum/size < refuse_level && bsize < FS/2/2)
+			      repo_recorded = writeRepo(repo_buf[repo_cur]);
+			    else
+			      repo_recorded = false;
+#if 1
+			    if (repo_recorded)
+			      std::cout << "burst size " << bsize << " lev " << sum/size << std::endl;
+#endif
+			  }
+			else
+			  repo_recorded = writeRepo(repo_buf[repo_cur]);
+
 			repo_index = 0;
 			repo_cur = ~repo_cur & 1;
 		      }
@@ -603,6 +753,8 @@ int main(int argc, char **argv)
     {"rate", required_argument, NULL, 'r'},
     {"volume", required_argument, NULL, 'v'},
     {"detect-ratio", required_argument, NULL, 'd'},
+    {"refuse-level", required_argument, NULL, 'l'},
+    {"burst-ratio", required_argument, NULL, 'b'},
     {"monitor", required_argument, NULL, 'm'},
     {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
@@ -620,7 +772,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:v:d:m:nsh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:v:d:l:b:m:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -725,6 +877,32 @@ int main(int argc, char **argv)
 	      std::cout << "-d option requires float arg" << std::endl;
 	    }
 	  break;
+	case 'b':
+	  if (optarg)
+	    {
+	      char *end;
+	      float ratio = std::strtof(optarg, &end);
+	      burst_ratio = ratio;
+	      std::cout << "setting burst-ratio to " << ratio << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-b option requires float arg" << std::endl;
+	    }
+	  break;
+	case 'l':
+	  if (optarg)
+	    {
+	      char *end;
+	      float level = std::strtof(optarg, &end);
+	      refuse_level = level;
+	      std::cout << "setting refuse-level to " << level << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-l option requires float arg" << std::endl;
+	    }
+	  break;
 	case 'm':
 	  if (optarg)
 	    {
@@ -753,6 +931,8 @@ int main(int argc, char **argv)
 	  std::cout << "-r, --rate=F\tset output rate" << std::endl;
 	  std::cout << "-v, --volume=F\tset input volume" << std::endl;
 	  std::cout << "-d, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
+	  std::cout << "-l, --refuse-level=R\tset the level for too high noise" << std::endl;
+	  std::cout << "-b, --burst-ratio=R\tset the ratio for burst noise" << std::endl;
 	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
 	  std::cout << "-m, --monitor=\"hw:C,D\"\taudio monitor device" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
