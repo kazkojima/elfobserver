@@ -35,6 +35,8 @@ const uint32_t TS_RESET = std::byteswap(0xfffffffe);
 const int SIGPORT = 5992;
 char *qpd_host_addr = (char *)"10.253.253.12";
 int qpd_tcp_port = 5992;
+char *mon_host_addr = (char *)"127.0.0.1";
+int mon_udp_port = 5993;
 
 // QPD report
 struct report {
@@ -561,19 +563,21 @@ int main(int argc, char **argv)
     {"rate", required_argument, NULL, 'r'},
     {"volume", required_argument, NULL, 'v'},
     {"detect-ratio", required_argument, NULL, 'd'},
+    {"monitor", required_argument, NULL, 'm'},
     {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
     {"help", no_argument, NULL, 'h'},
    {0}};
   int c;
   char hostname[16];
+  char monname[16];
   bool format_wav = true;
   wav_hdr wav;
 
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:v:d:nsh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:v:d:m:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -608,6 +612,27 @@ int main(int argc, char **argv)
 	      hostname[sizeof(hostname)-1] = 0;
 	      qpd_host_addr = hostname;
 	      std::cout << "setting qpd host:port to " << qpd_host_addr << ':' << qpd_tcp_port << std::endl;
+	    }
+	  break;
+	case 'm':
+	  if (optarg)
+	    {
+	      char pbuf[24];
+	      strncpy(pbuf, optarg, 24);
+	      pbuf[23] = 0;
+	      char *cp = strchr(pbuf, ':');
+	      if (cp)
+		{
+		  *cp = 0;
+		  std::string portstr(cp+1);
+		  int port = std::stoi(portstr);
+		  if (port > 1024 && port < 65536)
+		    mon_udp_port = port;
+		}
+	      strncpy(monname, pbuf, sizeof(hostname));
+	      monname[sizeof(monname)-1] = 0;
+	      mon_host_addr = monname;
+	      std::cout << "setting monitor host:port to " << mon_host_addr << ':' << mon_udp_port << std::endl;
 	    }
 	  break;
 	case 'w':
@@ -696,6 +721,7 @@ int main(int argc, char **argv)
 	  std::cout << "-v, --volume=F\tset input volume" << std::endl;
 	  std::cout << "-d, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
 	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
+	  std::cout << "-m, --monitor=host:port monitor address&port" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
 	  return 0;
@@ -725,9 +751,43 @@ int main(int argc, char **argv)
       return EXIT_FAILURE;
     }
 
+  int monsock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (monsock < 0)
+    {
+      close(sigsock);
+      return EXIT_FAILURE;
+    }
+
+  struct sockaddr_in mon_addr;
+  memset(&mon_addr, 0, sizeof(mon_addr));
+  mon_addr.sin_family = AF_INET;
+  if (inet_pton(AF_INET, mon_host_addr, (void *)&mon_addr.sin_addr.s_addr) != 1)
+    {
+      close(monsock);
+      close(sigsock);
+      std::cout << "invalid monitor ip address formon_addrt" << std::endl;
+      return EXIT_FAILURE;
+    }
+  mon_addr.sin_port = htons(mon_udp_port);
+
+  struct sockaddr_in ma;
+  memset(&ma, 0, sizeof(ma));
+  ca.sin_family = AF_INET;
+  ca.sin_addr.s_addr = INADDR_ANY;
+  ca.sin_port = htons(0);
+
+  if (bind(monsock, (struct sockaddr *)&ca, sizeof(ca)) < 0)
+    {
+      close(monsock);
+      close(sigsock);
+      std::cout << "can't bind monitor socket" << std::endl;
+      return EXIT_FAILURE;
+    }
+
   int qpdsock = socket(AF_INET, SOCK_STREAM, 0);
   if (qpdsock < 0)
     {
+      close(monsock);
       close(sigsock);
       std::cout << "can't get socket for qpd" << std::endl;
       return EXIT_FAILURE;
@@ -738,6 +798,7 @@ int main(int argc, char **argv)
   sa.sin_family = AF_INET;
   if (inet_pton(AF_INET, qpd_host_addr, (void *)&sa.sin_addr.s_addr) != 1)
     {
+      close(monsock);
       close(sigsock);
       std::cout << "invalid ip address format" << std::endl;
       return EXIT_FAILURE;
@@ -746,6 +807,7 @@ int main(int argc, char **argv)
   if (connect(qpdsock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
     {
       close(qpdsock);
+      close(monsock);
       close(sigsock);
       std::cout << "can't connect qpd server" << std::endl;
       return EXIT_FAILURE;
@@ -776,6 +838,9 @@ int main(int argc, char **argv)
 	  std::cout << "recv failed" << std::endl;
 	  break;
 	}
+
+      // copy VITA packet to monitor. Ignore error
+      sendto(monsock, vbuf, n, 0, (struct sockaddr *)&mon_addr, sizeof(ma));
 
       if (((uint32_t *)vbuf)[1] == TS_RESET)
 	{
@@ -855,6 +920,7 @@ int main(int argc, char **argv)
   std::cout << "time " << elapsed << "ms " << std::endl;
 #endif
 
+  close(monsock);
   close(sigsock);
 
   // Formal cleanup
