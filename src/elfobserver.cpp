@@ -64,6 +64,10 @@ int repo_cur = 0; // 0 or 1
 int repo_index = 0;
 bool repo_recorded = false;
 
+// Refuse to record too noisy data and short "burst"
+float burst_level = -1.0; // don't skip
+float burst_ratio = 1.1;
+
 // WAV
 typedef struct __attribute__((packed)) WAV_HEADER {
   /* RIFF Chunk Descriptor */
@@ -84,6 +88,81 @@ typedef struct __attribute__((packed)) WAV_HEADER {
   uint8_t Subchunk2ID[4] = {'d', 'a', 't', 'a'}; // "data"  string
   uint32_t Subchunk2Size;                        // Sampled data length
 } wav_hdr;
+
+// Biquad filter
+enum FilterType { LowPass, HighPass };
+
+template<typename Sample> class BiquadFilter {
+private:
+    Sample b0, b1, b2;
+    Sample a1, a2;
+
+    // buffers
+    Sample x1 = 0.0, x2 = 0.0;
+    Sample y1 = 0.0, y2 = 0.0;
+
+public:
+  BiquadFilter(Sample cutoffHz, Sample sampleRateHz, FilterType type)
+  {
+    double q = 0.7071067811865476; 
+
+    // normalize frequency and compute coeffs of the transfer function
+    double omega = 2.0 * M_PI * cutoffHz / sampleRateHz;
+    Sample alpha = std::sin(omega) / (2.0 * q);
+    Sample beta = std::cos(omega);
+    Sample a0 = 1.0 + alpha;
+    if (type == LowPass)
+      {
+	b0 = ((1.0 - beta) / 2.0) / a0;
+	b1 = (1.0 - beta) / a0;
+	b2 = ((1.0 - beta) / 2.0) / a0;
+      }
+    else // if (type == HighPass)
+      {
+	b0 = ((1.0 + beta) / 2.0) / a0;
+	b1 = (-1.0 - beta) / a0;
+	b2 = ((1.0 + beta) / 2.0) / a0;
+      }
+    a1 = (-2.0 * beta) / a0;
+    a2 = (1.0 - alpha) / a0;
+  }
+
+  Sample process(Sample input)
+  {
+    float output = b0 * input + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+
+    // Update status
+    x2 = x1;
+    x1 = input;
+    y2 = y1;
+    y1 = output;
+
+    return output;
+  }
+
+  void reset()
+  {
+    x1 = x2 = y1 = y2 = 0.0;
+  }
+};
+
+size_t burst_size(float *p, size_t size, float th)
+{
+  size_t w = 0;
+  size_t m = 0;
+  for (size_t i = 0; i < size; i++)
+    {
+      if (p[i] > th)
+	{
+	  w += 1;
+	  if (w > m)
+	    m = w;
+	}
+      else
+	w = 0;
+    }
+  return m;
+}
 
 // Producer-Consumer
 
@@ -486,6 +565,16 @@ public:
     int hcount = 0;
     bool first = true;
     int n;
+
+    // These are not for line reduction but for detecting burst noise.
+    const int hc = 5500;
+    BiquadFilter<float> hpf(hc, FS/2, HighPass);
+    BiquadFilter<float> hpf2(hc, FS/2, HighPass);
+
+    const float lc = 10.0;
+    BiquadFilter<float> lpf(lc, FS/2, LowPass);
+    float *tbuf = (float *)malloc(RAWSIZE*(NBUF+1)*sizeof(float));
+
     for (;;)
       {
 	sig_in = input.consume();
@@ -534,8 +623,36 @@ public:
 		    repo_buf[repo_cur][repo_index] = repo;
 		    if (++repo_index == NBUF)
 		      {
-			// Write repo if needed
-			repo_recorded = writeRepo(repo_buf[repo_cur]);
+			// Ad-Hoc "burst" check
+			// The most "burst" type noises have strong 5-10kHz components.
+			// Chech is done by applying 5500Hz high pass 4-th biquad filter
+			// and demodulate the result with abs + 10Hz low pass filter.
+			if (burst_level > 0)
+			  {
+			    float *rbuf = &raw_buf[~raw_cur & 1][0];
+			    size_t size = RAWSIZE*(NBUF+1);
+			    float sum = 0;
+			    for (size_t i = 0; i < size; ++i)
+			      {
+				float out = hpf.process(rbuf[i]);
+				out = hpf2.process(out);
+				out = lpf.process(fabsf(out));
+				tbuf[i] = out;
+				sum += lpf.process(out);
+			      }
+
+			    float th = std::min((sum / size)*burst_ratio, burst_level);
+			    size_t bsize = burst_size(tbuf, size, th);
+			    //std::cout << "bsize " << bsize << " lev " << sum/size << " th " << th << std::endl;
+			    // Skip if burst >= 0.25sec
+			    if (bsize < FS/2/4)
+			      repo_recorded = writeRepo(repo_buf[repo_cur]);
+			    else
+				repo_recorded = false;
+			  }
+			else
+			  repo_recorded = writeRepo(repo_buf[repo_cur]);
+
 			repo_index = 0;
 			repo_cur = ~repo_cur & 1;
 		      }
@@ -563,6 +680,8 @@ int main(int argc, char **argv)
     {"rate", required_argument, NULL, 'r'},
     {"volume", required_argument, NULL, 'v'},
     {"detect-ratio", required_argument, NULL, 'd'},
+    {"burst-level", required_argument, NULL, 'l'},
+    {"burst-ratio", required_argument, NULL, 'b'},
     {"monitor", required_argument, NULL, 'm'},
     {"noinfo", no_argument, NULL, 'n'},
     {"statistics", no_argument, NULL, 's'},
@@ -577,7 +696,7 @@ int main(int argc, char **argv)
   while (1)
     {
       int option_index = 0;
-      c = getopt_long(argc, argv, "f:q:w:r:v:d:m:nsh", longopts, &option_index);
+      c = getopt_long(argc, argv, "f:q:w:r:v:d:l:b:m:nsh", longopts, &option_index);
       if (c == -1)
 	break;
       switch (c)
@@ -703,6 +822,32 @@ int main(int argc, char **argv)
 	      std::cout << "-d option requires float arg" << std::endl;
 	    }
 	  break;
+	case 'b':
+	  if (optarg)
+	    {
+	      char *end;
+	      float ratio = std::strtof(optarg, &end);
+	      burst_ratio = ratio;
+	      std::cout << "setting burst-ratio to " << ratio << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-b option requires float arg" << std::endl;
+	    }
+	  break;
+	case 'l':
+	  if (optarg)
+	    {
+	      char *end;
+	      float level = std::strtof(optarg, &end);
+	      burst_level = level;
+	      std::cout << "setting burst-level to " << level << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-l option requires float arg" << std::endl;
+	    }
+	  break;
 	case 'n':
 	  print_info = false;
 	  break;
@@ -720,6 +865,8 @@ int main(int argc, char **argv)
 	  std::cout << "-r, --rate=F\tset output rate" << std::endl;
 	  std::cout << "-v, --volume=F\tset input volume" << std::endl;
 	  std::cout << "-d, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
+	  std::cout << "-l, --burst-level=R\tset the level for burst noise" << std::endl;
+	  std::cout << "-b, --burst-ratio=R\tset the ratio for burst noise" << std::endl;
 	  std::cout << "-n, --noinfo\tdon't print info for repo file" << std::endl;
 	  std::cout << "-m, --monitor=host:port monitor address&port" << std::endl;
 	  std::cout << "-s, --statistics\tprint rank-size every 1 hour" << std::endl;
