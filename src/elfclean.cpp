@@ -22,6 +22,8 @@ using namespace std;
 
 const int FS = 48000;
 
+const int TRAIN = 10;
+
 // QPD report
 struct report {
   float mean_value;
@@ -479,8 +481,8 @@ int main(int argc, char **argv)
   bool imp_prev = false;
   float tmp;
 
-  // training for 1.0sec
-  for (size_t i = 0; i < FS && i < fsize/sizeof(float) ; i++)
+  // training for 10sec
+  for (size_t i = 0; i < TRAIN*FS && i < fsize/sizeof(float) ; i++)
     {
       sig_in = ibuf[i];
 
