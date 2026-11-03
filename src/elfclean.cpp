@@ -22,7 +22,9 @@ using namespace std;
 
 const int FS = 48000;
 
+// NLMS training
 const int TRAIN = 10;
+const float TRAIN_ACC = 1.5;
 
 // QPD report
 struct report {
@@ -484,6 +486,8 @@ int main(int argc, char **argv)
   // training for 10sec
   for (size_t i = 0; i < TRAIN*FS && i < fsize/sizeof(float) ; i++)
     {
+      float ac = TRAIN_ACC;
+
       sig_in = ibuf[i];
 
       if (i < M)
@@ -511,11 +515,11 @@ int main(int argc, char **argv)
 	      if (imp == false)
 		{
 		  yi = xi;
-		  reduceimp.process(x.front(), x.back(), &tmp, 0.05);
+		  reduceimp.process(x.front(), x.back(), &tmp, 0.05*ac);
 		}
 	      else
 		{
-		  reduceimp.process(y.back(), 0.0, &yi, 0.05, false);
+		  reduceimp.process(y.back(), 0.0, &yi, 0.05*ac, false);
 		}
 	      // Clamp yi
 	      yi = std::clamp(yi, -0.5f, 0.5f);
@@ -526,12 +530,12 @@ int main(int argc, char **argv)
 	  else
 	    {
 	      z.push_back(yi);
-	      reducewhite.process(z.back(), z.front(), &zi, 0.1);
+	      reducewhite.process(z.back(), z.front(), &zi, 0.1*ac);
 	    }
 	  if (!skip_line)
 	    {
 	      w.push_back(zi);
-	      reduceline.process(w.back(), w.front(), &tmp, 0.01);
+	      reduceline.process(w.back(), w.front(), &tmp, 0.01*ac);
 	    }
 	}
     }
