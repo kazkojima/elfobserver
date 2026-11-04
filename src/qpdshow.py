@@ -3,6 +3,22 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 
+# slanted sum on axis 0
+def slsum(na, slope):
+    n,m = na.shape
+    la = np.zeros(m)
+    for y in range(m):
+        s = 0.0
+        for x in range(n):
+            ydash = y + int(slope*x)
+            if y < 0:
+                y = 0
+            if y > m-1:
+                y = m-1
+            s += na[x, ydash]
+        la[y] = s
+    return la
+
 #print(sys.argv)
 if len(sys.argv) < 2:
     print('error: h5 file name required')
@@ -51,10 +67,17 @@ darray = darray[:-50,:]
 tend = darray.shape[0] * 0.01
 na = darray.T / np.max(darray)
 if accum:
-    la = np.sum(na, axis=0)
+    #la0 = np.sum(na, axis=0)
+    #y0 = la0 / np.max(la0)
+    # If 2500 curve starts ~0.04 sec early to 2300 curve, two curves looks to be close.
+    # -0.04 sec = -4 ticks and -4/(2500-2300) = -0.02
+    # This slanted sum makes the peaks a little sharper.
+    la = slsum(na, -0.02)
     y = la / np.max(la)
     x = np.arange(0, tend, 0.01)
-    plt.plot(x, y)
+    plt.plot(x, y, label="slanted sum")
+    #plt.plot(x,y0, label="simple sum")
+    #plt.legend()
     plt.ylabel('mag')
 else:
     im = plt.imshow(na, origin='lower', extent=[0, tend, 2300, 2500], aspect='auto', cmap=cmap)
