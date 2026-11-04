@@ -232,6 +232,7 @@ int main(int argc, char **argv)
     {"print-impulse-section", no_argument, NULL, 's'},
     {"line-delay", required_argument, NULL, 'd'},
     {"detect-ratio", required_argument, NULL, 'r'},
+    {"fade-in", required_argument, NULL, 'f'},
     {"help", no_argument, NULL, 'h'},
     {0}};
   int c;
@@ -244,6 +245,7 @@ int main(int argc, char **argv)
   bool print_section = false;
   int line_delay = 960;
   float detect_ratio = 11;
+  size_t output_fade_in = 0;
 
   wav_hdr_com wavcom;
   wav_hdr wav;
@@ -276,6 +278,24 @@ int main(int argc, char **argv)
 	  else
 	    {
 	      std::cout << "-d option requires int arg" << std::endl;
+	    }
+	  break;
+	case 'f':
+	  if (optarg)
+	    {
+	      char *end;
+	      int fadein = std::strtol(optarg, &end, 10);
+	      if (fadein >= 0)
+		{
+		  output_fade_in = (size_t) fadein;
+		  std::cout << "setting fade-in to " << fadein << std::endl;
+		}
+	      else
+		std::cout << "wrong fade-in value " << fadein << std::endl;
+	    }
+	  else
+	    {
+	      std::cout << "-f option requires int arg" << std::endl;
 	    }
 	  break;
 	case 'r':
@@ -343,6 +363,7 @@ int main(int argc, char **argv)
 	  std::cout << "-s, --print-impulse-section\tprint impulse section" << std::endl;
 	  std::cout << "-d, --line-delay=N\tset the delay for line reducer" << std::endl;
 	  std::cout << "-r, --detect-ratio=R\tset the ratio for impulse detector" << std::endl;
+	  std::cout << "-f, --fade-in=N\tsamples for output linear fade in" << std::endl;
 	  std::cout << "-h, --help\t\tdisplay this help and exit" << std::endl;
 
 	  return 0;
@@ -540,6 +561,12 @@ int main(int argc, char **argv)
 	}
     }
 
+  if (!skip_line)
+    {
+      for (size_t i = 0; i < (size_t) line_delay + 1; i++)
+	w.push_back(0);
+    }
+
   for (size_t i = 0; i < fsize/sizeof(float); i++)
     {
       sig_in = ibuf[i];
@@ -586,7 +613,10 @@ int main(int argc, char **argv)
 	  w.push_back(zi);
 	  e = reduceline.process(w.back(), w.front(), &tmp, 0.01);
 	}
-      obuf[i] = e;
+      if (output_fade_in > 0 && i < output_fade_in)
+	obuf[i] = e * ((float) i / output_fade_in);
+      else
+	obuf[i] = e;
     }
 
 #if 0
